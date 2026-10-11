@@ -194,6 +194,14 @@
     return request("/api/reset", { method: "POST" });
   }
 
+  // ---------- Dispute & AI ----------
+  async function draftDispute(transactionRef, shippingEvidence, extras = {}) {
+    return request("/api/ai/draft-dispute", {
+      method: "POST",
+      body: JSON.stringify({ transactionRef, shippingEvidence, ...extras }),
+    });
+  }
+
   // ---------- Public API ----------
   window.MANDATE_API = {
     get isOnline() { return backendOnline; },
@@ -217,6 +225,7 @@
     reconcileCurrencies,
     compareProcurement,
     procurementPay,
+    draftDispute,
     getAuditLog,
     getDomainSettings,
     updateDomainSettings,

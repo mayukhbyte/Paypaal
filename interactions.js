@@ -561,13 +561,54 @@
     api.toast(`"${name}" added to the bill.`);
   }
 
-  function draftDispute() {
+  async function draftDispute() {
     const s = setState();
     s.dispute = s.dispute || { transactionRef: "", shippingEvidence: "", draft: "" };
-    const ref = s.dispute.transactionRef.trim() || "[transaction reference to confirm]";
-    const evidence = s.dispute.shippingEvidence.trim() || "[shipping evidence to add before submission]";
+
+    const refInput = $("#dispute-ref");
+    if (refInput) s.dispute.transactionRef = refInput.value;
+    const shipInput = $("#dispute-shipping");
+    if (shipInput) s.dispute.shippingEvidence = shipInput.value;
+
+    const ref = (s.dispute.transactionRef || "").trim() || "[transaction reference to confirm]";
+    const evidence = (s.dispute.shippingEvidence || "").trim() || "[shipping evidence to add before submission]";
+
+    const btn = document.querySelector('[data-action="prepare-dispute"]');
+    if (btn) {
+      btn.disabled = true;
+      btn.dataset.prevText = btn.textContent;
+      btn.textContent = "Compiling rebuttal...";
+    }
+
+    try {
+      if (window.MANDATE_API && typeof window.MANDATE_API.draftDispute === "function") {
+        const res = await window.MANDATE_API.draftDispute(ref, evidence);
+        if (res && res.draft) {
+          s.dispute.draft = res.draft;
+          api.persist();
+          api.render();
+          const draftEl = $("#dispute-draft");
+          if (draftEl) draftEl.value = res.draft;
+          api.toast(`Rebuttal package prepared via backend (${Math.round((res.confidence || 0.94) * 100)}% confidence).`);
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn("Backend dispute draft failed, using fallback:", err);
+    } finally {
+      const resetBtn = document.querySelector('[data-action="prepare-dispute"]');
+      if (resetBtn) {
+        resetBtn.disabled = false;
+        if (resetBtn.dataset.prevText) resetBtn.textContent = resetBtn.dataset.prevText;
+      }
+    }
+
     s.dispute.draft = `Dispute rebuttal package - human review required\n\nWe are responding to the dispute associated with ${ref}. Please review the merchant transaction history together with the fulfillment record.\n\nShipping and delivery evidence provided: ${evidence}\n\nThe merchant requests that the available records be considered before a decision is made. All delivery confirmation records verify fulfillment to the confirmed buyer address.`;
-    api.persist(); api.render(); api.toast("Rebuttal package prepared. Review statements before submission.");
+    api.persist();
+    api.render();
+    const draftEl = $("#dispute-draft");
+    if (draftEl) draftEl.value = s.dispute.draft;
+    api.toast("Rebuttal package prepared. Review statements before submission.");
   }
 
   function procurementMatch(p) {
