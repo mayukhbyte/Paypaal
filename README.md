@@ -137,8 +137,8 @@ A conversational treasury assistant powered by real-time financial NLP:
 ### 2. Installation
 ```bash
 # Clone the repository
-git clone https://github.com/mayukhbyte/paypaal.git
-cd paypaal
+git clone https://github.com/mayukhbyte/Paypaal.git
+cd Paypaal
 
 # Install dependencies
 npm install
