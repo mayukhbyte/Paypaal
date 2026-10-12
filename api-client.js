@@ -1,14 +1,34 @@
 /**
- * Mandate | API Client
- * =====================
+ * Mandate | API Client with Real-Time Server-Sent Events (SSE)
+ * ============================================================
  * Bridges the frontend state machine with the Express backend.
- * Falls back to local-only mode if the server isn't reachable.
+ * Provides live bi-directional state synchronization via SSE stream.
  */
 (() => {
   "use strict";
 
-  const BASE = window.location.origin;
+  const getBaseUrl = () => {
+    if (typeof window === "undefined") return "http://localhost:3000";
+    if (window.MANDATE_BACKEND_URL) return window.MANDATE_BACKEND_URL;
+    const { protocol, hostname, port, origin } = window.location;
+    if (protocol.startsWith("http")) {
+      if (port === "3000" || port === "5000" || port === "8080") {
+        return origin;
+      }
+      if (hostname === "localhost" || hostname === "127.0.0.1") {
+        return `http://${hostname}:3000`;
+      }
+      return origin;
+    }
+    return "http://localhost:3000";
+  };
+
+  const BASE = getBaseUrl();
   let backendOnline = false;
+  let isRealtimeConnected = false;
+  let eventSource = null;
+  const eventListeners = new Set();
+  let reconnectTimer = null;
 
   async function request(path, options = {}) {
     try {
@@ -39,6 +59,99 @@
     }
   }
 
+  function updateServerBadge(statusText, color, pulse = true) {
+    const badge = document.getElementById("server-status-badge");
+    if (!badge) return;
+    badge.innerHTML = `<span class="status-dot" style="background:${color}; box-shadow:0 0 0 3px ${color}40; ${pulse ? "animation: pulse 2s infinite" : ""}"></span>${statusText}`;
+  }
+
+  function emitRealtimeEvent(type, data) {
+    eventListeners.forEach((fn) => {
+      try { fn(type, data); } catch (e) { console.error("[SSE Listener]", e); }
+    });
+    try {
+      window.dispatchEvent(new CustomEvent("mandate:sse", { detail: { type, data } }));
+    } catch (_) {}
+  }
+
+  function subscribe(listener) {
+    eventListeners.add(listener);
+    return () => eventListeners.delete(listener);
+  }
+
+  function connectRealtime() {
+    if (eventSource && eventSource.readyState === EventSource.OPEN) return;
+    if (eventSource) {
+      try { eventSource.close(); } catch (_) {}
+    }
+
+    try {
+      eventSource = new EventSource(`${BASE}/api/events`);
+
+      eventSource.onopen = () => {
+        isRealtimeConnected = true;
+        backendOnline = true;
+        updateServerBadge("REALTIME LIVE", "#10b981", true);
+        console.log("%c[Mandate Realtime] Connected to SSE live stream at " + BASE, "color:#10b981; font-weight:bold");
+      };
+
+      eventSource.onerror = () => {
+        isRealtimeConnected = false;
+        if (eventSource) {
+          try { eventSource.close(); } catch (_) {}
+          eventSource = null;
+        }
+        updateServerBadge("RECONNECTING...", "#f59e0b", false);
+        if (!reconnectTimer) {
+          reconnectTimer = setTimeout(() => {
+            reconnectTimer = null;
+            connectRealtime();
+          }, 3000);
+        }
+      };
+
+      const eventTypes = [
+        "init",
+        "dashboard",
+        "mandate_created",
+        "mandate_updated",
+        "mandate_deleted",
+        "approval_created",
+        "approval_updated",
+        "order_created",
+        "order_captured",
+        "audit_entry",
+        "invoice_created",
+        "domain_updated",
+        "triage_created",
+        "triage_updated",
+        "triage_deleted",
+        "vitals_tick",
+        "paypal_status",
+        "inventory_updated",
+        "inventory_evaluated",
+        "escrow_updated",
+        "procurement_scanned",
+        "vault_updated",
+        "user_authenticated",
+        "reset",
+      ];
+
+      eventTypes.forEach((type) => {
+        eventSource.addEventListener(type, (evt) => {
+          try {
+            const data = JSON.parse(evt.data);
+            emitRealtimeEvent(type, data);
+          } catch (err) {
+            console.error(`[Mandate Realtime] Failed parsing ${type}:`, err);
+          }
+        });
+      });
+    } catch (err) {
+      console.warn("[Mandate Realtime] EventSource initialization failed:", err.message);
+    }
+  }
+
   // ---------- Dashboard ----------
   async function getDashboard() {
     return request("/api/dashboard");
@@ -60,11 +173,15 @@
     return request(`/api/mandates/${id}/toggle`, { method: "PATCH" });
   }
 
+  async function deleteMandate(id) {
+    return request(`/api/mandates/${id}`, { method: "DELETE" });
+  }
+
   // ---------- Guardrails ----------
-  async function evaluateGuardrails(mandateId, merchant, amount, category) {
+  async function evaluateGuardrails(mandateId, merchant, amount, category, recordSpend = true) {
     return request("/api/guardrails/evaluate", {
       method: "POST",
-      body: JSON.stringify({ mandateId, merchant, amount, category }),
+      body: JSON.stringify({ mandateId, merchant, amount, category, recordSpend }),
     });
   }
 
@@ -202,14 +319,26 @@
     });
   }
 
+  async function submitDispute(data) {
+    return request("/api/ai/submit-dispute", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
   // ---------- Public API ----------
   window.MANDATE_API = {
     get isOnline() { return backendOnline; },
+    get isRealtimeConnected() { return isRealtimeConnected; },
+    get baseUrl() { return BASE; },
+    connectRealtime,
+    subscribe,
     checkHealth,
     getDashboard,
     getMandates,
     createMandate,
     toggleMandate,
+    deleteMandate,
     evaluateGuardrails,
     getApprovals,
     createApproval,
@@ -226,6 +355,153 @@
     compareProcurement,
     procurementPay,
     draftDispute,
+    submitDispute,
+    // ---------- Clinical Triage & Billing ----------
+    async getTriageQueue() {
+      return request("/api/triage");
+    },
+    async createTriageRecord(data) {
+      return request("/api/triage", {
+        method: "POST",
+        body: JSON.stringify(data),
+      });
+    },
+    async assessTriage(id) {
+      return request(`/api/triage/${id}/assess`, { method: "POST" });
+    },
+    async invoiceTriage(id) {
+      return request(`/api/triage/${id}/invoice`, { method: "POST" });
+    },
+    async payTriage(id) {
+      return request(`/api/triage/${id}/pay`, { method: "POST" });
+    },
+    async deleteTriage(id) {
+      return request(`/api/triage/${id}`, { method: "DELETE" });
+    },
+
+    // ---------- Real-Time Currency Conversion & Google FX Parity ----------
+    async getRates(base = "USD") {
+      return request(`/api/rates?base=${encodeURIComponent(base)}`);
+    },
+    async convertFx(amount, from = "EUR", to = "USD") {
+      return request("/api/fx/convert", {
+        method: "POST",
+        body: JSON.stringify({ amount, from, to }),
+      });
+    },
+
+    // ---------- Inventory Agent ----------
+    async getInventory() {
+      return request("/api/inventory");
+    },
+    async evaluateInventory(data) {
+      return request("/api/inventory/evaluate", {
+        method: "POST",
+        body: JSON.stringify(data),
+      });
+    },
+    async checkoutInventory(data) {
+      return request("/api/inventory/checkout", {
+        method: "POST",
+        body: JSON.stringify(data),
+      });
+    },
+    async addInventoryItem(data) {
+      return request("/api/inventory/items", {
+        method: "POST",
+        body: JSON.stringify(data),
+      });
+    },
+    async simulateInventoryTelemetry(sku, delta = -1) {
+      return request("/api/inventory/telemetry", {
+        method: "POST",
+        body: JSON.stringify({ sku, delta }),
+      });
+    },
+
+    // ---------- Developer Escrow (3-Stage Workflow) ----------
+    async getEscrow() {
+      return request("/api/escrow");
+    },
+    async createEscrow(data) {
+      return request("/api/escrow", {
+        method: "POST",
+        body: JSON.stringify(data),
+      });
+    },
+    async verifyEscrowEvidence(id, evidence) {
+      return request(`/api/escrow/${id}/evidence`, {
+        method: "POST",
+        body: JSON.stringify({ evidence }),
+      });
+    },
+    async authorizeEscrow(id, reviewer, reviewNotes) {
+      return request(`/api/escrow/${id}/authorize`, {
+        method: "POST",
+        body: JSON.stringify({ reviewer, reviewNotes }),
+      });
+    },
+    async checkoutEscrow(id) {
+      return request(`/api/escrow/${id}/checkout`, { method: "POST" });
+    },
+
+    // ---------- Procurement Dual-Document Anomaly Scanner ----------
+    async scanProcurementAnomalies(data) {
+      return request("/api/procurement/scan", {
+        method: "POST",
+        body: JSON.stringify(data),
+      });
+    },
+    async getProcurementScans() {
+      return request("/api/procurement/scans");
+    },
+
+    // ---------- PayPal Connect ----------
+    async connectPayPal(credentials) {
+      return request("/api/paypal/connect", {
+        method: "POST",
+        body: JSON.stringify(credentials),
+      });
+    },
+
+    // ---------- Vault Management ----------
+    async getVault() {
+      return request("/api/vault");
+    },
+    async updateVault(amount) {
+      return request("/api/vault", {
+        method: "POST",
+        body: JSON.stringify({ amount: Number(amount) }),
+      });
+    },
+
+    // ---------- User Authentication & OAuth 2.0 ----------
+    async login(email, password, name = "", role = "", vaultAmount = null) {
+      return request("/api/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ email, password, name, role, vaultAmount }),
+      });
+    },
+    async oauthLogin(provider, email = "", name = "", role = "", vaultAmount = null) {
+      return request("/api/auth/oauth", {
+        method: "POST",
+        body: JSON.stringify({ provider, email, name, role, vaultAmount }),
+      });
+    },
+    async getAuthUsers() {
+      return request("/api/auth/users");
+    },
+    async getAuthMe() {
+      return request("/api/auth/me");
+    },
+    async logout(token = "") {
+      return request("/api/auth/logout", {
+        method: "POST",
+        body: JSON.stringify({ token }),
+      });
+    },
+
+    // ---------- Public API ----------
     getAuditLog,
     getDomainSettings,
     updateDomainSettings,
@@ -233,14 +509,28 @@
     reset: resetDemo,
   };
 
-  // Auto-check health on load
-  checkHealth().then((health) => {
-    if (health.paypalConnected) {
-      console.log("%c[Mandate] PayPal sandbox connected", "color: #006947; font-weight: bold");
-    } else if (health.status === "ok") {
-      console.log("%c[Mandate] Server online, sandbox ready", "color: #9a5a00; font-weight: bold");
+  // Update PayPal sandbox badge based on connection mode
+  function updatePayPalBadge(paypalConnected) {
+    const badge = document.getElementById("paypal-status-badge");
+    if (!badge) return;
+    if (paypalConnected) {
+      badge.innerHTML = `<span class="status-dot" style="background:#003087; box-shadow:0 0 0 3px #00308740; animation: pulse 2s infinite"></span>PayPal ✓ Connected`;
+      badge.style.color = "#003087";
     } else {
-      console.log("%c[Mandate] Backend offline | local fallback mode", "color: #ba1a1a; font-weight: bold");
+      badge.innerHTML = `<span class="status-dot" style="background:#f59e0b; box-shadow:0 0 0 3px rgba(245,158,11,.2)"></span>PayPal Simulated`;
+      badge.style.color = "";
     }
+  }
+
+  // Start real-time connection and check health
+  checkHealth().then((health) => {
+    updatePayPalBadge(health.paypalConnected);
+    if (health.status === "ok") {
+      connectRealtime();
+    } else {
+      updateServerBadge("LOCAL ACTIVE", "#10b981", false);
+    }
+  }).catch(() => {
+    updateServerBadge("LOCAL ACTIVE", "#10b981", false);
   });
 })();

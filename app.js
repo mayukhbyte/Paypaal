@@ -33,15 +33,64 @@
   const clone = (value) => JSON.parse(JSON.stringify(value));
   const initialState = () => ({
     route: "overview", agentOnline: true, mandates: [],
+    vault: 0, defaultVault: 0,
+    currentUser: null,
     approvals: [], activity: [],
     fairParticipants: clone(D.fairShare.participants || ["Alice", "Bob", "Charlie", "Dave"]),
     fairItems: clone(D.fairShare.items), fairContext: D.fairShare.context,
     fairReceiptName: "", activityFilter: "all", approvalFilter: "all", mandateFilter: "all",
-    procurement: { invoiceRef: "", poRef: "", invoiceLine: "", poLine: "", invoiceQty: "", poQty: "", invoiceTotal: "", poTotal: "", checked: false, approved: false },
-    cfo: { messages: [], invoices: [], reconcile: null },
-    inventory: { item: "", stock: "", threshold: "", supplierA: "", supplierADays: "", supplierB: "", supplierBDays: "", evaluated: false, approved: false },
-    triage: { queue: [], billingTarget: "Patient" },
-    escrow: { milestone: "", criteria: "", evidence: "", verified: false, humanApproved: false }
+    procurement: {
+      invoiceRef: "INV-2026-904",
+      poRef: "PO-2026-904",
+      invoiceLine: "High-Speed Fiber Transceivers",
+      poLine: "High-Speed Fiber Transceivers",
+      invoiceQty: "12",
+      poQty: "10",
+      invoiceUnitPrice: "115.00",
+      poUnitPrice: "100.00",
+      invoiceTotal: "1380.00",
+      poTotal: "1000.00",
+      vendorName: "NexGen Optronics",
+      checked: false,
+      approved: false,
+      lastScan: null,
+      scans: []
+    },
+    cfo: {
+      messages: [],
+      invoices: [],
+      reconcile: null,
+      sourceCurrency: "EUR",
+      targetCurrency: "USD",
+      liveRate: 1.1203,
+      liveRates: {},
+      liveRateText: "Google Finance Parity: 1 EUR = 1.1203 USD",
+    },
+    inventory: {
+      items: [],
+      item: "",
+      sku: "",
+      stock: "",
+      threshold: "",
+      supplierA: "",
+      priceA: "",
+      daysA: "",
+      supplierB: "",
+      priceB: "",
+      daysB: "",
+      evaluated: false,
+      approved: false
+    },
+    triage: { queue: [], billingTarget: "Patient", liveVitals: { hr: 72, bp: "120/80", spo2: 98, temp: 98.6 } },
+    escrow: {
+      contracts: [],
+      milestone: "Milestone 1: Webhook cryptographic verification suite & test coverage",
+      criteria: "Deliver verified RSA-SHA256 signature validator passing all PayPal sandbox webhook payloads.",
+      evidence: "PR #84: commit e7b409a (https://github.com/mandate/core/pull/84)",
+      stage: 1,
+      verified: false,
+      humanApproved: false
+    }
   });
 
   function loadState() {
@@ -52,7 +101,15 @@
       const cleanedApprovals = (stored.approvals || []).filter((a) => !["runpod-gpu", "figma-enterprise", "overseas-registrar"].includes(a.id));
       const cleanedActivity = (stored.activity || []).filter((act) => !["aws-scale", "design-assets", "gpu-cluster", "unverified-merchant"].includes(act.id));
       const participants = Array.isArray(stored.fairParticipants) && stored.fairParticipants.length >= 2 ? stored.fairParticipants : clone(D.fairShare.participants || ["Alice", "Bob", "Charlie", "Dave"]);
-      return { ...initialState(), ...stored, fairParticipants: participants, mandates: cleanedMandates, approvals: cleanedApprovals, activity: cleanedActivity };
+      const baseInv = initialState().inventory;
+      const loadedInv = stored.inventory && Array.isArray(stored.inventory.items) && stored.inventory.items.length > 0
+        ? { ...baseInv, ...stored.inventory }
+        : baseInv;
+      const cleanedState = { ...initialState(), ...stored, inventory: loadedInv, fairParticipants: participants, mandates: cleanedMandates, approvals: cleanedApprovals, activity: cleanedActivity };
+      if (stored.currentUser && stored.currentUser.id === "usr-admin-01" && stored.currentUser.email === "admin@mandate.finance") {
+        cleanedState.currentUser = null;
+      }
+      return cleanedState;
     } catch (_) { return initialState(); }
   }
 
@@ -96,9 +153,44 @@
     const mobileMore = $("#mobile-more");
     if (mobileMore) mobileMore.setAttribute("aria-expanded", "false");
     render();
+    if ((route === "overview" || route === "mandates") && window.MANDATE_API) {
+      if (typeof window.MANDATE_API.getMandates === "function") {
+        window.MANDATE_API.getMandates().then((m) => {
+          if (Array.isArray(m) && m.length > 0) {
+            state.mandates = m;
+            syncChrome();
+            render();
+          }
+        }).catch(() => {});
+      }
+      if (typeof window.MANDATE_API.getDashboard === "function") {
+        window.MANDATE_API.getDashboard().then((d) => {
+          if (d && d.settlementLatency) {
+            state._dashLatency = d.settlementLatency;
+            render();
+          }
+        }).catch(() => {});
+      }
+      if (typeof window.MANDATE_API.getAuditLog === "function") {
+        window.MANDATE_API.getAuditLog().then((logs) => {
+          if (Array.isArray(logs) && logs.length > 0) {
+            state.activity = logs.map((entry) => ({
+              id: entry.id,
+              title: `${entry.details?.merchant || entry.action} - ${entry.decision}`,
+              merchant: entry.details?.merchant || entry.action,
+              amount: Number(entry.details?.amount) || 0,
+              agent: entry.details?.mandateId || "Policy engine",
+              status: entry.decision === "approved" ? "approved" : entry.decision === "blocked" ? "blocked" : "review",
+              decision: entry.reason,
+            }));
+            render();
+          }
+        }).catch(() => {});
+      }
+    }
     if (route === "approvals" && window.MANDATE_API && window.MANDATE_API.getApprovals) {
       window.MANDATE_API.getApprovals().then((serverApprovals) => {
-        if (Array.isArray(serverApprovals) && serverApprovals.length > 0) {
+        if (Array.isArray(serverApprovals)) {
           state.approvals = serverApprovals;
           syncChrome();
           render();
@@ -110,6 +202,67 @@
         if (Array.isArray(invoices) && invoices.length > 0) {
           state.cfo = state.cfo || {};
           state.cfo.invoices = invoices;
+          render();
+        }
+      }).catch(() => {});
+    }
+    if (route === "triage" && window.MANDATE_API && window.MANDATE_API.getTriageQueue) {
+      window.MANDATE_API.getTriageQueue().then((data) => {
+        if (data && Array.isArray(data.queue)) {
+          state.triage = state.triage || {};
+          state.triage.queue = data.queue;
+          state.triage.stats = data.stats;
+          render();
+        }
+      }).catch(() => {});
+    }
+    if (route === "inventory" && window.MANDATE_API && window.MANDATE_API.getInventory) {
+      window.MANDATE_API.getInventory().then((inv) => {
+        if (inv && Array.isArray(inv.items)) {
+          state.inventory = state.inventory || {};
+          state.inventory.items = inv.items;
+          if (!state.inventory.sku && inv.items.length > 0) {
+            const first = inv.items[0];
+            state.inventory.sku = first.sku;
+            state.inventory.item = first.item;
+            state.inventory.stock = String(first.stock);
+            state.inventory.threshold = String(first.threshold);
+            state.inventory.supplierA = first.supplierA || "";
+            state.inventory.priceA = String(first.priceA || "");
+            state.inventory.daysA = String(first.daysA || "");
+            state.inventory.supplierB = first.supplierB || "";
+            state.inventory.priceB = String(first.priceB || "");
+            state.inventory.daysB = String(first.daysB || "");
+          }
+          render();
+        }
+      }).catch(() => {});
+    }
+    if (route === "escrow" && window.MANDATE_API && window.MANDATE_API.getEscrow) {
+      window.MANDATE_API.getEscrow().then((res) => {
+        if (res && Array.isArray(res.contracts)) {
+          state.escrow = state.escrow || {};
+          state.escrow.contracts = res.contracts;
+          render();
+        }
+      }).catch(() => {});
+    }
+    if (route === "cfo" && window.MANDATE_API && window.MANDATE_API.getRates) {
+      window.MANDATE_API.getRates(state.cfo?.sourceCurrency || "USD").then((r) => {
+        if (r && r.rates) {
+          state.cfo = state.cfo || {};
+          state.cfo.liveRates = r.rates;
+          state.cfo.rateProvider = r.provider;
+          state.cfo.ratesUpdated = r.lastUpdated;
+          render();
+        }
+      }).catch(() => {});
+    }
+    if (route === "procurement" && window.MANDATE_API && window.MANDATE_API.getProcurementScans) {
+      window.MANDATE_API.getProcurementScans().then((scans) => {
+        if (Array.isArray(scans)) {
+          state.procurement = state.procurement || {};
+          state.procurement.scans = scans;
           render();
         }
       }).catch(() => {});
@@ -137,8 +290,30 @@
     }
     const headerVault = $("#header-vault-amount");
     if (headerVault) {
-      const liveVault = (state.mandates || []).reduce((acc, m) => acc + Math.max(0, (Number(m.limit) || 0) - (Number(m.spent) || 0)), 0);
-      headerVault.textContent = formatMoney(liveVault);
+      const defaultV = state.defaultVault || 0;
+      const totalSpent = (state.mandates || []).reduce((acc, m) => acc + (Number(m.spent) || 0), 0);
+      const liveVault = (state.mandates && state.mandates.length > 0)
+        ? (state.mandates || []).reduce((acc, m) => acc + Math.max(0, (Number(m.limit) || 0) - (Number(m.spent) || 0)), 0)
+        : Math.max(0, defaultV - totalSpent);
+      headerVault.textContent = wholeMoney(liveVault);
+    }
+    const avatarBtn = $("#topbar-avatar-btn");
+    if (avatarBtn) {
+      if (state.currentUser) {
+        avatarBtn.textContent = state.currentUser.avatar || (state.currentUser.name ? state.currentUser.name.slice(0, 2).toUpperCase() : "AD");
+        avatarBtn.title = `${state.currentUser.name || "User"} (${state.currentUser.email || ""}) · ${state.currentUser.authMethod || "Authenticated"}`;
+      } else {
+        avatarBtn.textContent = "IN";
+        avatarBtn.title = "Sign In with OAuth / Email & Configure Vault Capital";
+      }
+    }
+    const authLabel = $("#topbar-auth-label");
+    if (authLabel) {
+      if (state.currentUser) {
+        authLabel.textContent = state.currentUser.name || (state.currentUser.email ? state.currentUser.email.split("@")[0] : "OAuth Active");
+      } else {
+        authLabel.textContent = "OAuth / Sign In";
+      }
     }
   }
 
@@ -196,7 +371,10 @@
   }
 
   function renderOverview() {
-    const budgetPool = state.mandates.reduce((sum, m) => sum + (Number(m.limit) || 0), 0);
+    const defaultV = state.defaultVault || 50000;
+    const budgetPool = state.mandates.length > 0
+      ? state.mandates.reduce((sum, m) => sum + (Number(m.limit) || 0), 0)
+      : defaultV;
     const committed = state.mandates.reduce((sum, m) => sum + (Number(m.spent) || 0), 0);
     const budgetLeft = Math.max(0, budgetPool - committed);
     const committedPct = budgetPool > 0 ? pct(committed, budgetPool).toFixed(1) : "0.0";
@@ -228,7 +406,7 @@
   }
 
   function renderMandates() {
-    const actions = `<button class="btn btn-primary" data-action="open-mandate" type="button">New mandate</button>`;
+    const actions = `<div style="display:flex; gap:8px"><button class="btn btn-secondary" data-action="open-mandate" type="button">+ Custom Mandate</button><button class="btn btn-primary" data-action="open-mandate" type="button">+ New Mandate</button></div>`;
     const filter = state.mandateFilter || "all";
     const totalCount = state.mandates.length;
     const highCount = state.mandates.filter((item) => pct(item.spent, item.limit) >= 80).length;
@@ -238,13 +416,78 @@
       const usage = pct(item.spent, item.limit);
       const threshold = item.humanApprovalAbove == null ? "All within cap" : `Above ${money(item.humanApprovalAbove)}`;
       const hasHumanThreshold = item.humanApprovalAbove != null;
-      return `<article class="card mandate-card"><div class="mandate-title"><span class="mandate-symbol">${ICONS.shield}</span><div><h2>${esc(item.name)}</h2><p>ID: ${esc(item.id)} · ${esc(item.description || "Scoped spend mandate")}</p></div><span class="status-pill ${item.status === "active" ? "approved" : "blocked"}">${esc(item.status)}</span></div><div class="utilization-block"><div class="utilization-top"><div><small>Monthly spend cap</small><div><strong>${wholeMoney(item.spent)} <span>/ ${wholeMoney(item.limit)}</span></strong></div></div><span class="tag">${usage.toFixed(0)}%</span></div><div class="utilization-track ${usage >= 80 ? "warning" : ""}"><span style="width:${usage}%"></span></div><div class="utilization-foot"><span>${wholeMoney(Math.max(0, item.limit - item.spent))} runway left</span><span>${esc(item.reset || "Monthly cycle")}</span></div></div><div class="mandate-specs"><div class="spec-box"><small>Per-transaction cap</small><strong>${money(item.perTransaction)}</strong></div><div class="spec-box"><small>Human approval</small><strong>${esc(threshold)}</strong></div></div><div><span class="card-kicker">Authorized merchants</span><div class="merchant-list" style="margin-top:7px">${(item.merchants || []).map((merchant) => `<span class="merchant-chip">${esc(merchant)}</span>`).join("")}</div>${item.categories?.length ? `<span class="card-kicker" style="display:block;margin-top:10px">Authorized categories</span><div class="merchant-list" style="margin-top:7px">${item.categories.map((category) => `<span class="merchant-chip">${esc(category)}</span>`).join("")}</div>` : ""}</div><div class="mandate-bottom"><div><small>${hasHumanThreshold ? "Escalates above the human-review threshold" : "Auto-approves within the scoped caps"}</small><small>${item.expiry ? `Expires ${esc(item.expiry)}` : "No expiry set"}</small>${item.fundingSource ? `<small>Funding: ${esc(item.fundingSource)}</small>` : ""}</div><div style="display:flex; gap:8px"><button class="btn btn-secondary btn-sm" data-action="simulate-mandate-payment" data-id="${esc(item.id)}" type="button" title="Test agent spending against this mandate">Test payment</button><button class="link-button" data-action="toggle-mandate" data-id="${esc(item.id)}" type="button">${item.status === "active" ? "Pause" : "Resume"}</button></div></div></article>`;
+      const isGlowing = Boolean(item._highlight);
+      return `<article class="card mandate-card ${isGlowing ? 'highlight-glow' : ''}"><div class="mandate-title"><span class="mandate-symbol">${ICONS.shield}</span><div><h2>${esc(item.name)}</h2><p>ID: ${esc(item.id)} · ${esc(item.description || "Scoped spend mandate")}</p></div><span class="status-pill ${item.status === "active" ? "approved" : "blocked"}">${esc(item.status)}</span></div><div class="utilization-block"><div class="utilization-top"><div><small>Monthly spend cap</small><div><strong>${wholeMoney(item.spent)} <span>/ ${wholeMoney(item.limit)}</span></strong></div></div><span class="tag">${usage.toFixed(0)}%</span></div><div class="utilization-track ${usage >= 80 ? "warning" : ""}"><span style="width:${usage}%"></span></div><div class="utilization-foot"><span>${wholeMoney(Math.max(0, item.limit - item.spent))} runway left</span><span>${esc(item.reset || "Monthly cycle")}</span></div></div><div class="mandate-specs"><div class="spec-box"><small>Per-transaction cap</small><strong>${money(item.perTransaction)}</strong></div><div class="spec-box"><small>Human approval</small><strong>${esc(threshold)}</strong></div></div><div><span class="card-kicker">Authorized merchants</span><div class="merchant-list" style="margin-top:7px">${(item.merchants || []).map((merchant) => `<span class="merchant-chip">${esc(merchant)}</span>`).join("")}</div>${item.categories?.length ? `<span class="card-kicker" style="display:block;margin-top:10px">Authorized categories</span><div class="merchant-list" style="margin-top:7px">${item.categories.map((category) => `<span class="merchant-chip">${esc(category)}</span>`).join("")}</div>` : ""}</div><div class="mandate-bottom"><div><small>${hasHumanThreshold ? "Escalates above the human-review threshold" : "Auto-approves within the scoped caps"}</small><small>${item.expiry ? `Expires ${esc(item.expiry)}` : "No expiry set"}</small>${item.fundingSource ? `<small>Funding: ${esc(item.fundingSource)}</small>` : ""}</div><div style="display:flex; gap:8px"><button class="btn btn-secondary btn-sm" data-action="simulate-mandate-payment" data-id="${esc(item.id)}" type="button" title="Test agent spending against this mandate">Test payment</button><button class="link-button" data-action="toggle-mandate" data-id="${esc(item.id)}" type="button">${item.status === "active" ? "Pause" : "Resume"}</button></div></div></article>`;
     }).join("");
+
+    const templatesPanel = `
+      <section class="mandate-templates-panel">
+        <div class="mandate-templates-header">
+          <div class="mandate-templates-title">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            <span>Real-time Quick Launch Templates</span>
+            <small style="color:var(--muted); font-size:11px; margin-left:4px">Deploy pre-verified guardrails directly to backend in 1 click</small>
+          </div>
+          <button class="link-button" data-action="open-mandate" type="button" style="font-size:11px">+ Build custom mandate</button>
+        </div>
+        <div class="template-cards-grid">
+          <article class="template-card">
+            <div class="template-card-top">
+              <span class="template-card-icon">☁️</span>
+              <span class="tag">Infrastructure</span>
+            </div>
+            <strong>Cloud & GPUs</strong>
+            <small>AWS, RunPod, Lambda, GCP</small>
+            <div class="template-card-specs">
+              <div><span>Cap:</span> <strong>$5,000</strong></div>
+              <button class="btn-template-add" data-action="quick-create-mandate" data-template="cloud" type="button">⚡ 1-Click Launch</button>
+            </div>
+          </article>
+          <article class="template-card">
+            <div class="template-card-top">
+              <span class="template-card-icon">🤖</span>
+              <span class="tag">AI Workloads</span>
+            </div>
+            <strong>AI & Model APIs</strong>
+            <small>OpenAI, Anthropic, Together</small>
+            <div class="template-card-specs">
+              <div><span>Cap:</span> <strong>$3,000</strong></div>
+              <button class="btn-template-add" data-action="quick-create-mandate" data-template="ai" type="button">⚡ 1-Click Launch</button>
+            </div>
+          </article>
+          <article class="template-card">
+            <div class="template-card-top">
+              <span class="template-card-icon">💻</span>
+              <span class="tag">Engineering</span>
+            </div>
+            <strong>DevOps & SaaS</strong>
+            <small>GitHub, Vercel, Linear, Sentry</small>
+            <div class="template-card-specs">
+              <div><span>Cap:</span> <strong>$1,500</strong></div>
+              <button class="btn-template-add" data-action="quick-create-mandate" data-template="devops" type="button">⚡ 1-Click Launch</button>
+            </div>
+          </article>
+          <article class="template-card">
+            <div class="template-card-top">
+              <span class="template-card-icon">📣</span>
+              <span class="tag">Marketing</span>
+            </div>
+            <strong>Growth & Ad Spend</strong>
+            <small>Google Ads, Meta, LinkedIn</small>
+            <div class="template-card-specs">
+              <div><span>Cap:</span> <strong>$4,000</strong></div>
+              <button class="btn-template-add" data-action="quick-create-mandate" data-template="growth" type="button">⚡ 1-Click Launch</button>
+            </div>
+          </article>
+        </div>
+      </section>
+    `;
 
     return `${pageHeader("Agent spend firewall", "Configure bounded mandates with per-transaction caps, merchant allowlists, and review thresholds verified before PayPal settlement.", "Guardrails and scoped authority", actions)}
       <div class="trust-banner"><span class="trust-icon">${ICONS.check}</span><div class="trust-copy"><strong>${totalCount} active agent mandate${totalCount === 1 ? "" : "s"} configured</strong><span>${totalCount > 0 ? "Every agent spend proposal is checked against its mandate before PayPal settlement." : "No mandates configured yet. Create a mandate to establish scoped authority for an agent."}</span></div><span class="status-pill approved">Policy active</span></div>
+      ${templatesPanel}
       <div class="filter-row" role="group" aria-label="Filter mandates"><button class="filter-chip ${filter === "all" ? "active" : ""}" data-mandate-filter="all" type="button">All active (${totalCount})</button><button class="filter-chip ${filter === "high" ? "active" : ""}" data-mandate-filter="high" type="button">High utilization (${highCount})</button><button class="filter-chip ${filter === "auto" ? "active" : ""}" data-mandate-filter="auto" type="button">Auto-approving (${autoCount})</button></div>
-      <div class="mandate-grid">${cards || `<div class="card empty-state" style="grid-column: 1 / -1; padding: 48px 24px; text-align: center;"><span class="empty-symbol" style="display:inline-block; margin-bottom:12px; color:var(--blue)">${ICONS.shield}</span><h3 style="font-size:19px; margin-bottom:8px">No spend mandates created yet</h3><p style="color:var(--muted); max-width:500px; margin:0 auto 22px; font-size:13px; line-height:1.6">Establish boundaries before deploying autonomous agents. Define budget caps, authorized merchants, and approval thresholds.</p><button class="btn btn-primary" data-action="open-mandate" type="button" style="padding:0 20px; font-size:13px">Create your first mandate</button></div>`}</div>
+      <div class="mandate-grid">${cards || `<div class="card empty-state" style="grid-column: 1 / -1; padding: 48px 24px; text-align: center;"><span class="empty-symbol" style="display:inline-block; margin-bottom:12px; color:var(--blue)">${ICONS.shield}</span><h3 style="font-size:19px; margin-bottom:8px">No spend mandates created yet</h3><p style="color:var(--muted); max-width:500px; margin:0 auto 22px; font-size:13px; line-height:1.6">Establish boundaries before deploying autonomous agents. Define budget caps, authorized merchants, and approval thresholds, or use the quick templates above.</p><button class="btn btn-primary" data-action="open-mandate" type="button" style="padding:0 20px; font-size:13px">+ Create custom mandate</button></div>`}</div>
       <section class="card" style="margin-top:15px"><div class="card-heading"><div><span class="card-kicker">Policy Evaluation Engine</span><h2 style="margin-top:5px">Deterministic verification path</h2><p>Merchant scope, budget headroom, transaction cap, and expiry are evaluated simultaneously.</p></div><span class="sandbox-tag">PayPal Sandbox Integrated</span></div><div class="evidence-grid"><div class="evidence-tile"><strong>Within mandate</strong><small>Eligible for auto-approval only when merchant, cap, budget, and expiry all validate.</small></div><div class="evidence-tile"><strong>Outside boundary</strong><small>Blocked for hard policy violations or escalated when exceeding human review threshold.</small></div></div></section>`;
   }
 
@@ -363,78 +606,1331 @@
       </div><aside class="stack"><section class="card"><div class="card-heading"><div><span class="card-kicker">Real-time split</span><h2 style="margin-top:5px">Individual balances</h2><p>Exact cent calculation updating with every character typed.</p></div></div><div id="fair-summary">${fairSummaryHtml()}</div></section><section class="card"><div class="card-heading"><div><span class="card-kicker">PayPal settlement</span><h2 style="margin-top:5px">Dispatch requests</h2><p>Generate payment requests for members with outstanding balances.</p></div><span class="status-pill review">Ready to dispatch</span></div><div class="demo-note"><span>${ICONS.info}</span><div><strong>PayPal Sandbox Integration</strong>Dispatch payment request links directly to owing participants.</div></div><button class="btn btn-primary" style="width:100%;margin-top:12px" data-action="prepare-fair-requests" type="button">Prepare request links</button></section></aside></div>`;
   }
 
-  function renderDisputes() {
-    const c = state.dispute || (state.dispute = { transactionRef: "", shippingEvidence: "", draft: "" });
-    const draft = c.draft || "Rebuttal draft will generate in real time as transaction reference and shipping evidence are entered.";
-    return `${pageHeader("Dispute operations", "Compile transaction history and fulfillment evidence for automated rebuttal generation and PayPal dispute resolution.", "Merchant protection and evidence management")}
-      <div class="trust-banner"><span class="trust-icon">${ICONS.arrowUpRight}</span><div class="trust-copy"><strong>Active dispute case · 88% estimated seller win rate</strong><span>Evidence package evaluated against PayPal Seller Protection criteria.</span></div><span class="sandbox-tag">Review required</span></div>
-      <div class="workflow-layout"><div class="stack"><section class="card"><div class="card-heading"><div><span class="card-kicker">Evidence intake</span><h2 style="margin-top:5px">Assemble the case record</h2><p>Enter the transaction reference and fulfillment evidence to support the merchant response.</p></div><span class="tag">Evidence Ledger</span></div><div class="form-grid"><div class="form-field full"><label for="dispute-ref">Transaction reference</label><input id="dispute-ref" type="text" data-dispute-field="transactionRef" value="${esc(c.transactionRef)}" placeholder="Transaction ID or PayPal Order ID"><span class="form-hint">Type any reference: updates response draft in real time.</span></div><div class="form-field full"><label for="dispute-shipping">Shipping or delivery confirmation</label><textarea id="dispute-shipping" data-dispute-field="shippingEvidence" placeholder="Tracking numbers, carrier verification, proof of electronic delivery">${esc(c.shippingEvidence)}</textarea></div></div><div class="evidence-grid" style="margin-top:13px"><div class="evidence-tile"><strong>Transaction record</strong><small id="dispute-ref-status">${c.transactionRef ? `Reference: ${esc(c.transactionRef)}` : "Awaiting transaction reference."}</small></div><div class="evidence-tile"><strong>Fulfillment record</strong><small id="dispute-ship-status">${c.shippingEvidence ? "Shipping evidence entered." : "Awaiting delivery details."}</small></div></div><div style="display:flex;justify-content:flex-end;margin-top:14px"><button class="btn btn-primary" data-action="prepare-dispute" type="button">Generate rebuttal draft</button></div></section>
-        <section class="card"><div class="card-heading"><div><span class="card-kicker">Response draft</span><h2 style="margin-top:5px">Merchant narrative package</h2><p>Inspect and edit the narrative before submission.</p></div><span class="status-pill review">Human review</span></div><div class="form-field"><label for="dispute-draft">Draft response</label><textarea id="dispute-draft" data-dispute-draft>${esc(draft)}</textarea></div></section></div>
-        <aside class="stack"><section class="card"><div class="card-heading"><div><span class="card-kicker">Case outlook</span><h2 style="margin-top:5px">Estimated recovery</h2><p>Predictive win estimate.</p></div><span class="status-pill approved">88% estimate</span></div><div class="ring-row" style="border-top:0;margin-top:0;padding-top:0"><span class="ring" aria-label="88 percent estimate"></span><div class="ring-copy"><strong>1 active case</strong><span>Seller protection criteria validated from carrier record.</span></div></div><div class="demo-note" style="margin-top:14px"><span>${ICONS.info}</span><div><strong>Fulfillment validation</strong>All carrier records must verify delivery to the confirmed buyer address before final filing.</div></div></section><section class="card"><div class="card-heading"><div><span class="card-kicker">Decision path</span><h2 style="margin-top:5px">Retrieve, verify, submit</h2></div></div><div class="workflow-step"><span class="step-number">1</span><div><strong>Retrieve records</strong><small>Match PayPal transaction ledger with shipping evidence.</small></div></div><div class="workflow-step"><span class="step-number">2</span><div><strong>Rebuttal draft</strong><small>Structured narrative compiled for dispute reviewer.</small></div></div><div class="workflow-step"><span class="step-number">3</span><div><strong>Merchant filing</strong><small>Authorized operator submits rebuttal to PayPal resolution center.</small></div></div></section></aside></div>`;
+      function computeDisputeOutlook(dispute) {
+    const d = dispute || {};
+    const ref = String(d.transactionRef || "").trim();
+    const ship = String(d.shippingEvidence || "").trim();
+    const draft = String(d.draft || "").trim();
+    const claimAmt = Number(d.amount || d.transactionAmount || 1850.00);
+
+    let score = 20; // baseline awaiting carrier documentation
+    if (ref.length >= 3) score += 20;
+    if (ship.length >= 10) score += 25;
+    if (/(fedex|ups|usps|dhl|ontrac|royal\s*mail|trk|tracking|signature|carrier)/i.test(ship)) score += 15;
+    if (/(delivered|signed|electronic\s*proof|gps|photo|pod)/i.test(ship)) score += 10;
+    if (draft.length >= 50) score += 10;
+    if (d.submitted) score += 10;
+
+    const winRate = Math.min(98, Math.max(15, score));
+    const expectedRecovery = Number(((claimAmt * winRate) / 100).toFixed(2));
+    const tier = winRate >= 80 ? "Strong Protection (Tier 1)" : winRate >= 50 ? "Moderate Documentation" : "Incomplete Evidence";
+    const statusClass = winRate >= 80 ? "approved" : winRate >= 50 ? "review" : "blocked";
+
+    return {
+      winRate,
+      claimAmt,
+      expectedRecovery,
+      tier,
+      statusClass,
+      hasRef: ref.length >= 3,
+      hasShip: ship.length >= 10,
+      hasDraft: draft.length >= 50,
+      submitted: Boolean(d.submitted)
+    };
   }
 
-  function renderProcurement() {
-    const p = state.procurement;
+  function renderDisputes() {
+    const c = state.dispute || (state.dispute = { transactionRef: "", shippingEvidence: "", draft: "", submitted: false, submissionId: "", submittedAt: "" });
+    const hasRef = Boolean(c.transactionRef && c.transactionRef.trim());
+    const hasEvidence = Boolean(c.shippingEvidence && c.shippingEvidence.trim());
+    const hasDraft = Boolean(c.draft && c.draft.trim().length > 10);
+    const step1Done = hasRef || hasEvidence;
+    const step2Done = hasDraft;
+    const step3Done = Boolean(c.submitted);
+    const outlook = computeDisputeOutlook(c);
+
+    return `${pageHeader("Dispute operations", "Compile transaction history and fulfillment evidence for automated rebuttal generation and PayPal dispute resolution.", "Merchant protection and evidence management")}
+      <div class="trust-banner">
+        <span class="trust-icon">${ICONS.arrowUpRight}</span>
+        <div class="trust-copy">
+          <strong>Active Dispute Case &middot; <span id="dispute-trust-winrate">${outlook.winRate}%</span> Real-Time Estimated Win Rate</strong>
+          <span id="dispute-trust-recovery">Predictive recovery: $${outlook.expectedRecovery.toLocaleString("en-US", {minimumFractionDigits: 2})} USD (${outlook.winRate}% of $${outlook.claimAmt.toLocaleString("en-US", {minimumFractionDigits: 2})}) under PayPal Seller Protection.</span>
+        </div>
+        <span class="sandbox-tag" id="dispute-trust-tag">${c.submitted ? "✓ Filed to PayPal" : "Live Predictive Outlook"}</span>
+      </div>
+
+      <div class="workflow-layout">
+        <div class="stack">
+          <section class="card">
+            <div class="card-heading">
+              <div>
+                <span class="card-kicker">1 · Evidence intake</span>
+                <h2 style="margin-top:5px">Assemble the case record</h2>
+                <p>Enter the transaction reference and fulfillment evidence to support the merchant response.</p>
+              </div>
+              <span class="tag">Evidence Ledger</span>
+            </div>
+            <div class="form-grid">
+              <div class="form-field full">
+                <label for="dispute-ref">Transaction reference</label>
+                <input id="dispute-ref" type="text" data-dispute-field="transactionRef" value="${esc(c.transactionRef)}" placeholder="Transaction ID or PayPal Order ID (e.g. TX-948201)">
+                <span class="form-hint">Type any reference: updates response draft and win outlook in real time.</span>
+              </div>
+              <div class="form-field full">
+                <label for="dispute-amount">Disputed Claim Amount ($ USD)</label>
+                <input id="dispute-amount" type="number" min="1" step="0.01" data-dispute-field="amount" value="${esc(c.amount || '1850.00')}" placeholder="1850.00">
+                <span class="form-hint">Disputed chargeback value. Estimated recovery calculates against this in real time.</span>
+              </div>
+              <div class="form-field full">
+                <label for="dispute-shipping">Shipping or delivery confirmation</label>
+                <textarea id="dispute-shipping" data-dispute-field="shippingEvidence" placeholder="Tracking numbers, carrier verification, proof of electronic delivery (e.g. FedEx TRK-884920, delivered to confirmed address)">${esc(c.shippingEvidence)}</textarea>
+              </div>
+            </div>
+            <div class="evidence-grid" style="margin-top:13px">
+              <div class="evidence-tile">
+                <strong>Transaction record</strong>
+                <small id="dispute-ref-status">${c.transactionRef ? `Reference: ${esc(c.transactionRef)}` : "Awaiting transaction reference."}</small>
+              </div>
+              <div class="evidence-tile">
+                <strong>Fulfillment record</strong>
+                <small id="dispute-ship-status">${c.shippingEvidence ? "Shipping evidence entered." : "Awaiting delivery details."}</small>
+              </div>
+            </div>
+            <div style="display:flex;justify-content:flex-end;margin-top:14px">
+              <button class="btn btn-primary" data-action="prepare-dispute" type="button">
+                ${ICONS.repeat} Generate rebuttal draft
+              </button>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-heading">
+              <div>
+                <span class="card-kicker">2 · Response draft</span>
+                <h2 style="margin-top:5px">Merchant narrative package</h2>
+                <p>Inspect and edit the narrative, then submit the complete merchant evidence package to PayPal.</p>
+              </div>
+              <span class="status-pill ${c.submitted ? 'approved' : 'review'}" id="dispute-submit-pill">
+                ${c.submitted ? "✓ Submitted" : "Pending filing"}
+              </span>
+            </div>
+
+            <div class="form-field">
+              <label for="dispute-draft">Draft response &mdash; review before filing</label>
+              <textarea id="dispute-draft" data-dispute-draft style="min-height:160px" placeholder="Click 'Generate rebuttal draft' above or type narrative package here...">${esc(c.draft || "")}</textarea>
+            </div>
+
+            ${c.submitted ? `
+              <div class="demo-note" style="margin-top:10px;border-color:var(--green)">
+                <span style="color:var(--green)">${ICONS.check}</span>
+                <div>
+                  <strong style="color:var(--green)">Merchant Narrative Package Filed Successfully</strong>
+                  <span>Submission ID: <code>${esc(c.submissionId || "")}</code> &middot; ${esc(c.submittedAt || "")} &middot; PayPal Resolution Center</span>
+                </div>
+              </div>
+            ` : ""}
+
+            <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:13px;flex-wrap:wrap;align-items:center">
+              <button class="btn btn-secondary" data-action="prepare-dispute" type="button" title="Auto-compile narrative from transaction & shipping evidence">
+                ${ICONS.repeat} Auto-Compile Draft
+              </button>
+              <button class="btn btn-secondary" data-action="copy-dispute-draft" type="button" ${!c.draft ? "disabled" : ""}>
+                Copy draft
+              </button>
+              ${c.submitted ? `<button class="btn btn-secondary" data-action="reset-dispute" type="button">New case</button>` : ""}
+              <button class="btn btn-primary" id="dispute-submit-btn" data-action="submit-dispute" type="button" ${c.submitted ? "disabled" : ""}>
+                ${c.submitted ? `${ICONS.check} Merchant Package Filed` : `${ICONS.arrowUpRight} Submit Merchant Narrative Package to PayPal`}
+              </button>
+            </div>
+
+            ${!c.submitted ? `
+              <div class="demo-note" style="margin-top:10px">
+                <span>${ICONS.info}</span>
+                <div>
+                  <strong>Ready to file:</strong>
+                  <span>Click "Submit Merchant Narrative Package to PayPal" to transmit the rebuttal and carrier evidence directly to the PayPal Dispute Resolution Center.</span>
+                </div>
+              </div>
+            ` : ""}
+          </section>
+        </div>
+
+        <aside class="stack">
+          <section class="card" id="case-outlook-card">
+            <div class="card-heading">
+              <div>
+                <span class="card-kicker">Predictive Intelligence</span>
+                <h2 style="margin-top:5px">Case Outlook &amp; Recovery</h2>
+                <p>Real-time predictive seller win rate &amp; capital recovery.</p>
+              </div>
+              <span class="status-pill ${outlook.statusClass}" id="dispute-outlook-pill">
+                ${outlook.winRate}% Win Rate
+              </span>
+            </div>
+
+            <div style="background:var(--surface-low); padding:14px; border-radius:8px; border:1px solid var(--border); margin-top:8px">
+              <span style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px">Real-Time Estimated Recovery</span>
+              <div style="display:flex; justify-content:space-between; align-items:baseline; margin-top:4px">
+                <strong style="font-size:24px; color:${outlook.winRate >= 70 ? 'var(--green)' : 'var(--text)'}" id="dispute-recovery-amount">
+                  $${outlook.expectedRecovery.toLocaleString("en-US", {minimumFractionDigits: 2})}
+                </strong>
+                <span style="font-size:12px; color:var(--muted)">of $${outlook.claimAmt.toLocaleString("en-US", {minimumFractionDigits: 2})} claim</span>
+              </div>
+
+              <!-- Real-time Progress Bar -->
+              <div style="width:100%; height:8px; background:var(--surface-mid); border-radius:4px; margin-top:10px; overflow:hidden">
+                <div id="dispute-recovery-bar" style="width:${outlook.winRate}%; height:100%; background:${outlook.winRate >= 75 ? 'var(--green)' : outlook.winRate >= 45 ? '#f59e0b' : '#ef4444'}; transition:width 0.3s ease"></div>
+              </div>
+              <div style="display:flex; justify-content:space-between; font-size:10px; color:var(--muted); margin-top:4px">
+                <span>Confidence: <strong id="dispute-outlook-tier">${esc(outlook.tier)}</strong></span>
+                <span id="dispute-outlook-pct">${outlook.winRate}%</span>
+              </div>
+            </div>
+
+            <div style="display:grid; gap:8px; margin-top:14px; font-size:11px">
+              <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 8px; background:var(--surface); border-radius:6px; border:1px solid var(--border)">
+                <span>Transaction Reference ID</span>
+                <span id="check-ref-status" class="status-pill ${outlook.hasRef ? 'approved' : 'review'}" style="font-size:9px">
+                  ${outlook.hasRef ? '✓ Verified (+20%)' : '⏳ Awaiting'}
+                </span>
+              </div>
+              <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 8px; background:var(--surface); border-radius:6px; border:1px solid var(--border)">
+                <span>Carrier Shipping &amp; Delivery POD</span>
+                <span id="check-ship-status" class="status-pill ${outlook.hasShip ? 'approved' : 'review'}" style="font-size:9px">
+                  ${outlook.hasShip ? '✓ Carrier POD (+35%)' : '⏳ Awaiting'}
+                </span>
+              </div>
+              <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 8px; background:var(--surface); border-radius:6px; border:1px solid var(--border)">
+                <span>Rebuttal Narrative Package</span>
+                <span id="check-draft-status" class="status-pill ${outlook.hasDraft ? 'approved' : 'review'}" style="font-size:9px">
+                  ${outlook.hasDraft ? '✓ Compiled (+20%)' : '⏳ Awaiting'}
+                </span>
+              </div>
+              <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 8px; background:var(--surface); border-radius:6px; border:1px solid var(--border)">
+                <span>PayPal Center Transmission</span>
+                <span id="check-submit-status" class="status-pill ${outlook.submitted ? 'approved' : 'review'}" style="font-size:9px">
+                  ${outlook.submitted ? '✓ Filed (+10%)' : '⏳ Ready to File'}
+                </span>
+              </div>
+            </div>
+
+            <div class="demo-note" style="margin-top:14px">
+              <span>${ICONS.info}</span>
+              <div id="dispute-outlook-advice">
+                ${outlook.winRate >= 80 ? "<strong>Optimal Protection:</strong> Evidence meets PayPal Seller Protection standards for full chargeback recovery." : "<strong>Action Needed:</strong> Add carrier tracking number and proof of delivery to maximize expected recovery."}
+              </div>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-heading">
+              <div>
+                <span class="card-kicker">Decision path</span>
+                <h2 style="margin-top:5px">Retrieve, verify, submit</h2>
+              </div>
+            </div>
+            <div class="workflow-step">
+              <span class="step-number" style="${step1Done ? 'background:var(--green);color:#fff' : ''}">1</span>
+              <div>
+                <strong>Retrieve records</strong>
+                <small>Match PayPal transaction ledger with shipping evidence.</small>
+              </div>
+            </div>
+            <div class="workflow-step">
+              <span class="step-number" style="${step2Done ? 'background:var(--green);color:#fff' : ''}">2</span>
+              <div>
+                <strong>Rebuttal narrative</strong>
+                <small>Structured merchant narrative package compiled.</small>
+              </div>
+            </div>
+            <div class="workflow-step">
+              <span class="step-number" style="${step3Done ? 'background:var(--green);color:#fff' : ''}">3</span>
+              <div>
+                <strong>Merchant filing</strong>
+                <small>Submit the evidence package to PayPal resolution center.</small>
+              </div>
+            </div>
+            <div style="margin-top:14px;display:grid;gap:8px">
+              <button class="btn btn-primary" data-action="submit-dispute" type="button" ${c.submitted ? "disabled" : ""} style="width:100%">
+                ${c.submitted ? `${ICONS.check} Package Filed to PayPal` : `${ICONS.arrowUpRight} Submit Merchant Narrative Package`}
+              </button>
+              ${c.submitted ? `<p style="font-size:11px;color:var(--green);text-align:center;margin:2px 0">✓ Dispute package transmitted &middot; ID: ${esc(c.submissionId || "")}</p>` : ""}
+            </div>
+          </section>
+        </aside>
+      </div>`;
+  }
+
+function renderProcurement() {
+    const p = state.procurement || {};
+    const lastScan = p.lastScan || null;
+    const scansList = p.scans || [];
+
     const hasTotals = p.invoiceTotal !== "" && p.poTotal !== "";
     const variance = hasTotals ? Math.round((Number(p.invoiceTotal) - Number(p.poTotal)) * 100) / 100 : 0;
-    const hasRefs = Boolean(p.invoiceRef?.trim() && p.poRef?.trim());
-    const hasLines = Boolean(p.invoiceLine?.trim() && p.poLine?.trim() && p.invoiceQty !== "" && p.poQty !== "");
-    const lineMatch = hasLines && p.invoiceLine.trim().toLowerCase() === p.poLine.trim().toLowerCase() && Number(p.invoiceQty) === Number(p.poQty);
-    const match = hasRefs && hasTotals && hasLines && lineMatch && Math.abs(variance) < 0.01;
-    const result = !p.checked ? "Enter document references, line items, quantities, and totals to compare." : !hasRefs ? "Anomaly flagged: invoice or purchase-order reference is missing." : !hasLines ? "Anomaly flagged: line item descriptions or quantities are missing." : !lineMatch ? "Anomaly flagged: line item or quantity does not match the purchase order." : !hasTotals ? "Anomaly flagged: document totals missing." : Math.abs(variance) >= 0.01 ? "Anomaly flagged: invoice and purchase-order totals differ." : "Exact match: line items, quantities, and totals agree. Authorized for payout.";
-    return `${pageHeader("Procurement reconciliation", "Automated two-way matching between supplier invoices and purchase orders with anomaly detection before payout authorization.", "Supplier controls and payment validation")}
-      <div class="trust-banner"><span class="trust-icon">${ICONS.doc}</span><div class="trust-copy"><strong>Invoice : PO match : Anomaly scan : Human-authorized payout</strong><span>Real-time calculation checks totals as you type.</span></div><span class="sandbox-tag">Audit Active</span></div>
-      <div class="workflow-layout"><div class="stack"><section class="card"><div class="card-heading"><div><span class="card-kicker">Document intake</span><h2 style="margin-top:5px">Supplier invoice and purchase order</h2><p>Enter references, line items, quantities, and totals for matching.</p></div><span class="tag">Two-way verification</span></div><div class="evidence-grid"><label class="file-drop"><strong>${p.invoiceName ? esc(p.invoiceName) : "Supplier invoice"}</strong><small>PDF or image document</small><input id="supplier-invoice" data-procurement-file="invoiceName" type="file" accept="image/*,.pdf"></label><label class="file-drop"><strong>${p.poName ? esc(p.poName) : "Purchase order"}</strong><small>PDF or image document</small><input id="supplier-po" data-procurement-file="poName" type="file" accept="image/*,.pdf"></label></div><div class="form-grid" style="margin-top:14px"><div class="form-field"><label for="invoice-ref">Invoice reference</label><input id="invoice-ref" data-procurement-field="invoiceRef" value="${esc(p.invoiceRef)}" placeholder="INV-2026-001"></div><div class="form-field"><label for="po-ref">Purchase-order reference</label><input id="po-ref" data-procurement-field="poRef" value="${esc(p.poRef)}" placeholder="PO-8841"></div><div class="form-field"><label for="invoice-line">Invoice line description</label><input id="invoice-line" data-procurement-field="invoiceLine" value="${esc(p.invoiceLine)}" placeholder="Cloud compute hours"></div><div class="form-field"><label for="po-line">PO line description</label><input id="po-line" data-procurement-field="poLine" value="${esc(p.poLine)}" placeholder="Cloud compute hours"></div><div class="form-field"><label for="invoice-qty">Invoice quantity</label><input id="invoice-qty" type="number" min="0" step="0.01" data-procurement-field="invoiceQty" value="${esc(p.invoiceQty)}" placeholder="10"></div><div class="form-field"><label for="po-qty">PO quantity</label><input id="po-qty" type="number" min="0" step="0.01" data-procurement-field="poQty" value="${esc(p.poQty)}" placeholder="10"></div><div class="form-field"><label for="invoice-total">Invoice total · USD</label><input id="invoice-total" type="number" min="0" step="0.01" data-procurement-field="invoiceTotal" value="${esc(p.invoiceTotal)}" placeholder="1500.00"></div><div class="form-field"><label for="po-total">PO approved total · USD</label><input id="po-total" type="number" min="0" step="0.01" data-procurement-field="poTotal" value="${esc(p.poTotal)}" placeholder="1500.00"></div></div><button class="btn btn-primary" style="margin-top:14px" data-action="compare-procurement" type="button">Run comparison scan</button></section>
-        <section class="card"><div class="card-heading"><div><span class="card-kicker">Reconciliation status</span><h2 style="margin-top:5px">Automated anomaly scan</h2></div><span class="status-pill ${!p.checked ? "review" : match ? "approved" : "blocked"}" id="procurement-pill">${!p.checked ? "Awaiting input" : match ? "Verified Match" : "Discrepancy"}</span></div><p id="procurement-result-text" style="font-size:11px;line-height:1.5;color:var(--muted)">${esc(result)}</p><div id="procurement-token-area">${p.checked && hasTotals ? `<div class="preview-token" style="margin-top:10px"><span>Invoice ${money(p.invoiceTotal)} · PO ${money(p.poTotal)}</span><strong>${variance === 0 ? "Variance $0.00" : `Variance ${money(variance)}`}</strong></div>` : ""}${p.checked && hasLines ? `<div class="preview-token" style="margin-top:8px"><span>${esc(p.invoiceLine)} · qty ${esc(p.invoiceQty)}</span><strong>${lineMatch ? "Line matched" : "Line mismatch"}</strong></div>` : ""}</div></section></div>
-      <aside class="stack"><section class="card"><div class="card-heading"><div><span class="card-kicker">Authorization gate</span><h2 style="margin-top:5px">Payout release</h2><p>Discrepancies keep payment locked.</p></div><span class="metric-icon green">${ICONS.check}</span></div><div class="workflow-step"><span class="step-number">1</span><div><strong>Verify matched totals</strong><small>Invoice and approved PO amounts must reconcile.</small></div></div><div class="workflow-step"><span class="step-number">2</span><div><strong>Human sign-off</strong><small>Approval unlocked exclusively upon verified match.</small></div></div><div class="workflow-step"><span class="step-number">3</span><div><strong>PayPal Payouts</strong><small>Funds dispatched securely to supplier account.</small></div></div><div style="display:grid;gap:8px;margin-top:13px"><button class="btn btn-secondary" id="procurement-approve-btn" data-action="approve-procurement" type="button" ${!p.checked || !match || p.approved ? "disabled" : ""}>${p.approved ? "Human approval recorded" : "Authorize matched invoice"}</button><button class="btn btn-primary" id="procurement-pay-btn" data-action="simulate-procurement-payout" type="button" ${!p.approved ? "disabled" : ""}>Dispatch PayPal Payout</button></div></section></aside></div>`;
+    const invQ = Number(p.invoiceQty || 0);
+    const poQ = Number(p.poQty || 0);
+    const hasQtyMismatch = invQ > 0 && poQ > 0 && invQ !== poQ;
+    const invP = Number(p.invoiceUnitPrice || 0);
+    const poP = Number(p.poUnitPrice || 0);
+    const hasPriceMismatch = invP > 0 && poP > 0 && Math.abs(invP - poP) >= 0.01;
+    const hasLineMismatch = Boolean(p.invoiceLine?.trim() && p.poLine?.trim() && p.invoiceLine.trim().toLowerCase() !== p.poLine.trim().toLowerCase());
+    const hasTotalMismatch = hasTotals && Math.abs(variance) >= 0.01;
+    const hasAnyAnomaly = hasQtyMismatch || hasPriceMismatch || hasLineMismatch || hasTotalMismatch;
+
+    return `${pageHeader("Procurement reconciliation & dual-document scan", "Automated cross-document anomaly detection checking both incoming vendor invoices and purchase orders before payout authorization.", "Supplier controls and payment validation")}
+      <div class="trust-banner">
+        <span class="trust-icon">${ICONS.doc}</span>
+        <div class="trust-copy">
+          <strong>Dual-Document Anomaly Scanner : Invoice ↔ PO cross-audit</strong>
+          <span>Real-time scanner verifies both documents for unit rate surcharges, quantity disparities, and total variance.</span>
+        </div>
+        <span class="sandbox-tag">Audit Active</span>
+      </div>
+
+      <div class="workflow-layout">
+        <div class="stack">
+          <section class="card">
+            <div class="card-heading">
+              <div>
+                <span class="card-kicker">Dual-Document Intake</span>
+                <h2 style="margin-top:5px">Document 1 (Vendor Invoice) ↔ Document 2 (Purchase Order)</h2>
+                <p>Cross-examine invoice line items and authorized purchase orders side-by-side.</p>
+              </div>
+              <span class="tag">Dual-Document Cross Audit</span>
+            </div>
+
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:14px">
+              <div style="background:var(--surface-subtle); padding:12px; border-radius:8px; border:1px solid var(--border)">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px">
+                  <strong style="color:var(--text); font-size:12px">📄 Document 1: Vendor Invoice</strong>
+                  <span class="status-pill ${hasAnyAnomaly ? 'blocked' : 'approved'}" style="font-size:10px">Incoming Bill</span>
+                </div>
+                <div class="form-grid" style="gap:8px">
+                  <div class="form-field full">
+                    <label for="invoice-ref">Invoice Reference</label>
+                    <input id="invoice-ref" data-procurement-field="invoiceRef" value="${esc(p.invoiceRef)}" placeholder="INV-2026-904">
+                  </div>
+                  <div class="form-field full">
+                    <label for="invoice-line">Invoiced Line Description</label>
+                    <input id="invoice-line" data-procurement-field="invoiceLine" value="${esc(p.invoiceLine)}" placeholder="High-Speed Fiber Transceivers">
+                  </div>
+                  <div class="form-field">
+                    <label for="invoice-qty">Invoiced Quantity</label>
+                    <input id="invoice-qty" type="number" min="0" step="1" data-procurement-field="invoiceQty" value="${esc(p.invoiceQty)}" placeholder="12">
+                  </div>
+                  <div class="form-field">
+                    <label for="invoice-unit-price">Unit Rate · USD</label>
+                    <input id="invoice-unit-price" type="number" min="0" step="0.01" data-procurement-field="invoiceUnitPrice" value="${esc(p.invoiceUnitPrice)}" placeholder="115.00">
+                  </div>
+                  <div class="form-field full">
+                    <label for="invoice-total">Billed Total · USD</label>
+                    <input id="invoice-total" type="number" min="0" step="0.01" data-procurement-field="invoiceTotal" value="${esc(p.invoiceTotal)}" placeholder="1380.00">
+                  </div>
+                </div>
+              </div>
+
+              <div style="background:var(--surface-subtle); padding:12px; border-radius:8px; border:1px solid var(--border)">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px">
+                  <strong style="color:var(--text); font-size:12px">📋 Document 2: Purchase Order (PO)</strong>
+                  <span class="status-pill approved" style="font-size:10px">Authorized Scope</span>
+                </div>
+                <div class="form-grid" style="gap:8px">
+                  <div class="form-field full">
+                    <label for="po-ref">PO Authorization Ref</label>
+                    <input id="po-ref" data-procurement-field="poRef" value="${esc(p.poRef)}" placeholder="PO-2026-904">
+                  </div>
+                  <div class="form-field full">
+                    <label for="po-line">Authorized PO Scope</label>
+                    <input id="po-line" data-procurement-field="poLine" value="${esc(p.poLine)}" placeholder="High-Speed Fiber Transceivers">
+                  </div>
+                  <div class="form-field">
+                    <label for="po-qty">Authorized Quantity</label>
+                    <input id="po-qty" type="number" min="0" step="1" data-procurement-field="poQty" value="${esc(p.poQty)}" placeholder="10">
+                  </div>
+                  <div class="form-field">
+                    <label for="po-unit-price">Agreed Rate · USD</label>
+                    <input id="po-unit-price" type="number" min="0" step="0.01" data-procurement-field="poUnitPrice" value="${esc(p.poUnitPrice)}" placeholder="100.00">
+                  </div>
+                  <div class="form-field full">
+                    <label for="po-total">Authorized Total · USD</label>
+                    <input id="po-total" type="number" min="0" step="0.01" data-procurement-field="poTotal" value="${esc(p.poTotal)}" placeholder="1000.00">
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:14px">
+              <button class="btn btn-secondary" data-action="autofill-procurement-sample" type="button">Load Sample Invoices</button>
+              <button class="btn btn-primary" data-action="scan-procurement" type="button">
+                🔍 Run Real-Time Anomaly Scan (Both Documents)
+              </button>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-heading">
+              <div>
+                <span class="card-kicker">Cross-Document Anomaly Inspection</span>
+                <h2 style="margin-top:5px">Anomalies Detected on Both Documents</h2>
+                <p>Discrepancies identified across Document 1 (Vendor Invoice) and Document 2 (PO).</p>
+              </div>
+              <span class="status-pill ${hasAnyAnomaly ? 'blocked' : 'approved'}" id="procurement-pill">
+                ${hasAnyAnomaly ? '⚠️ Anomalies Flagged in Both Documents' : '✓ Verified Dual Match'}
+              </span>
+            </div>
+
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px">
+              <div style="border:1px solid ${hasAnyAnomaly ? '#f87171' : 'var(--border)'}; background:${hasAnyAnomaly ? 'rgba(239,68,68,0.04)' : 'var(--surface-subtle)'}; padding:12px; border-radius:8px">
+                <strong style="color:var(--text); font-size:11px; display:block; margin-bottom:6px">Anomalies on Document 1 (Vendor Invoice):</strong>
+                <ul style="margin:0; padding-left:18px; font-size:11px; color:var(--text); line-height:1.6">
+                  ${hasQtyMismatch ? `<li style="color:#ef4444"><strong>Quantity inflation:</strong> Billed ${invQ} units vs ${poQ} authorized</li>` : ''}
+                  ${hasPriceMismatch ? `<li style="color:#ef4444"><strong>Unit rate surcharge:</strong> Invoiced at $${invP.toFixed(2)}/unit vs $${poP.toFixed(2)}/unit agreed</li>` : ''}
+                  ${hasTotalMismatch ? `<li style="color:#ef4444"><strong>Total overrun:</strong> Billed $${p.invoiceTotal} vs PO $${p.poTotal} (+$${variance.toFixed(2)})</li>` : ''}
+                  ${hasLineMismatch ? `<li style="color:#f59e0b"><strong>Scope disparity:</strong> Line item differs from PO authorized description</li>` : ''}
+                  ${!hasAnyAnomaly ? `<li style="color:#10b981">✓ All invoice terms conform to purchase order specifications</li>` : ''}
+                </ul>
+              </div>
+
+              <div style="border:1px solid ${hasAnyAnomaly ? '#f87171' : 'var(--border)'}; background:${hasAnyAnomaly ? 'rgba(239,68,68,0.04)' : 'var(--surface-subtle)'}; padding:12px; border-radius:8px">
+                <strong style="color:var(--text); font-size:11px; display:block; margin-bottom:6px">Anomalies on Document 2 (Purchase Order):</strong>
+                <ul style="margin:0; padding-left:18px; font-size:11px; color:var(--text); line-height:1.6">
+                  ${hasQtyMismatch ? `<li style="color:#ef4444"><strong>Authorized quantity breach:</strong> PO capacity of ${poQ} units exceeded</li>` : ''}
+                  ${hasPriceMismatch ? `<li style="color:#ef4444"><strong>Agreed price breach:</strong> Supplier bypassed contract rate of $${poP.toFixed(2)}</li>` : ''}
+                  ${hasTotalMismatch ? `<li style="color:#ef4444"><strong>Budget ceiling breach:</strong> PO cap $${p.poTotal} exceeded by incoming bill</li>` : ''}
+                  ${hasLineMismatch ? `<li style="color:#f59e0b"><strong>Scope discrepancy:</strong> Delivery does not match PO purchase requisition</li>` : ''}
+                  ${!hasAnyAnomaly ? `<li style="color:#10b981">✓ Purchase order matches vendor billing completely</li>` : ''}
+                </ul>
+              </div>
+            </div>
+
+            <div class="preview-token" style="margin-top:12px">
+              <span>Invoice Ref: <strong>${esc(p.invoiceRef || 'INV-01')}</strong> ↔ PO Ref: <strong>${esc(p.poRef || 'PO-01')}</strong></span>
+              <strong>${variance === 0 ? 'Variance: $0.00' : `Variance: +$${Math.abs(variance).toFixed(2)}`}</strong>
+            </div>
+          </section>
+
+          <section class="card" style="margin-top:14px">
+            <div class="card-heading">
+              <div>
+                <span class="card-kicker">Live Anomaly Scan Feed</span>
+                <h2 style="margin-top:5px">Real-Time Scanned Invoices Record (${scansList.length})</h2>
+                <p>Cross-document scan records logged directly in the backend verification ledger.</p>
+              </div>
+              <span class="tag">${scansList.length} Verified Scans</span>
+            </div>
+            <div style="overflow-x:auto; margin-top:8px">
+              <table style="width:100%; border-collapse:collapse; font-size:12px">
+                <thead>
+                  <tr style="border-bottom:1px solid var(--border); color:var(--muted); text-align:left">
+                    <th style="padding:8px 10px">Scan ID</th>
+                    <th style="padding:8px 10px">Vendor</th>
+                    <th style="padding:8px 10px">Invoice Ref ↔ PO Ref</th>
+                    <th style="padding:8px 10px">Totals &amp; Variance</th>
+                    <th style="padding:8px 10px">Anomaly Status</th>
+                    <th style="padding:8px 10px">Timestamp</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${scansList.length > 0 ? scansList.map((sc) => `
+                    <tr style="border-bottom:1px solid var(--border)">
+                      <td style="padding:9px 10px"><code>${esc(sc.id)}</code></td>
+                      <td style="padding:9px 10px"><strong>${esc(sc.vendorName || 'Supplier')}</strong></td>
+                      <td style="padding:9px 10px"><code>${esc(sc.invoiceRef)}</code> ↔ <code>${esc(sc.poRef)}</code></td>
+                      <td style="padding:9px 10px">
+                        ${money(sc.invoiceTotal)} vs ${money(sc.poTotal)}
+                        ${sc.variance !== 0 ? `<span style="color:#ef4444; font-weight:700"> (+${money(sc.variance)})</span>` : ' <span style="color:#10b981">(Match)</span>'}
+                      </td>
+                      <td style="padding:9px 10px">
+                        <span class="status-pill ${sc.hasAnomalies ? 'blocked' : 'approved'}" style="font-size:10px">
+                          ${sc.hasAnomalies ? '⚠️ Anomaly Flagged' : '✓ Verified Match'}
+                        </span>
+                      </td>
+                      <td style="padding:9px 10px; color:var(--muted); font-size:11px">
+                        ${sc.scannedAt ? new Date(sc.scannedAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : 'Live'}
+                      </td>
+                    </tr>
+                  `).join('') : `
+                    <tr>
+                      <td colspan="6" style="text-align:center; padding:18px; color:var(--muted)">
+                        No invoices scanned yet. Run a scan above to record real-time verification in the ledger.
+                      </td>
+                    </tr>
+                  `}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        <aside class="stack">
+          <section class="card">
+            <div class="card-heading">
+              <div>
+                <span class="card-kicker">Authorization Gate</span>
+                <h2 style="margin-top:5px">Payout Release</h2>
+                <p>Discrepancies keep funds locked.</p>
+              </div>
+              <span class="metric-icon ${hasAnyAnomaly ? 'amber' : 'green'}">${ICONS.check}</span>
+            </div>
+            <div class="workflow-step">
+              <span class="step-number">1</span>
+              <div>
+                <strong>Cross-Document Scan</strong>
+                <small>Checks Document 1 and Document 2 for discrepancies.</small>
+              </div>
+            </div>
+            <div class="workflow-step">
+              <span class="step-number">2</span>
+              <div>
+                <strong>Human Sign-off</strong>
+                <small>Approval unlocked exclusively upon verified match or waiver.</small>
+              </div>
+            </div>
+            <div class="workflow-step">
+              <span class="step-number">3</span>
+              <div>
+                <strong>PayPal Payouts</strong>
+                <small>Funds dispatched securely to supplier sandbox account.</small>
+              </div>
+            </div>
+            <div style="display:grid; gap:8px; margin-top:13px">
+              <button class="btn btn-secondary" id="procurement-approve-btn" data-action="approve-procurement" type="button" ${hasAnyAnomaly && !p.approved ? 'disabled' : ''}>
+                ${p.approved ? '✓ Human Approval Recorded' : 'Authorize Matched Invoice'}
+              </button>
+              <button class="btn btn-primary" id="procurement-pay-btn" data-action="simulate-procurement-payout" type="button" ${!p.approved ? 'disabled' : ''}>
+                Dispatch PayPal Payout (${money(p.invoiceTotal || 0)})
+              </button>
+            </div>
+          </section>
+        </aside>
+      </div>`;
   }
 
   function renderCfo() {
-    const c = state.cfo;
-    const messages = c.messages.length ? c.messages.map((message) => `<div class="chat-bubble ${message.role === "user" ? "user" : ""}">${esc(message.text)}</div>`).join("") : `<div class="chat-bubble">I monitor receivables, prepare structured invoices, and calculate multi-currency conversion rates in real time.</div>`;
-    const invoices = c.invoices.length ? c.invoices.map((item, index) => `<div class="activity-row"><span class="activity-icon">${ICONS.doc}</span><div class="activity-main"><strong>${esc(item.client || "Client")}</strong><small>${esc(item.currency)} invoice · ${esc(item.status || "Draft")}</small></div><div class="activity-meta"><span class="activity-amount">${money(item.amount)} ${esc(item.currency)}</span><button class="link-button" data-action="chase-invoice" data-index="${index}" type="button">Draft reminder</button></div></div>`).join("") : `<div class="empty-state"><span class="empty-symbol">${ICONS.doc}</span><strong>No receivables created</strong><p>Create an invoice below to track outstanding client balances.</p></div>`;
+    const c = state.cfo || {};
+    const messages = (c.messages || []).length ? c.messages.map((message) => `<div class="chat-bubble ${message.role === "user" ? "user" : ""}">${esc(message.text)}</div>`).join("") : `<div class="chat-bubble">I monitor receivables, prepare structured invoices, and calculate multi-currency conversion rates in real time according to live Google market rates.</div>`;
+    const invoices = (c.invoices || []).length ? c.invoices.map((item, index) => `<div class="activity-row"><span class="activity-icon">${ICONS.doc}</span><div class="activity-main"><strong>${esc(item.client || "Client")}</strong><small>${esc(item.currency)} invoice · ${esc(item.status || "Draft")}</small></div><div class="activity-meta"><span class="activity-amount">${money(item.amount)} ${esc(item.currency)}</span><button class="link-button" data-action="chase-invoice" data-index="${index}" type="button">Draft reminder</button></div></div>`).join("") : `<div class="empty-state"><span class="empty-symbol">${ICONS.doc}</span><strong>No receivables created</strong><p>Create an invoice below to track outstanding client balances.</p></div>`;
     const reconcile = c.reconcile;
-    return `${pageHeader("Freelancer CFO", "Receivables management, client invoice generation, payment reminders, and multi-currency reconciliation.", "Freelancer treasury management")}
-      <div class="trust-banner"><span class="trust-icon">${ICONS.chat}</span><div class="trust-copy"><strong>Autonomous financial management : invoices, follow-ups, currency conversion</strong><span>Real-time calculation updates currency math as you type.</span></div><span class="sandbox-tag">Treasury Active</span></div>
-      <div class="chat-layout"><section class="card chat-panel"><div class="card-heading"><div><span class="card-kicker">Conversational workspace</span><h2 style="margin-top:5px">Treasury Assistant</h2><p>Draft client follow-ups and review account runway.</p></div><span class="status-pill approved">Online</span></div><div class="chat-messages" id="cfo-messages">${messages}</div><div class="chat-compose"><input id="cfo-chat-input" type="text" placeholder="Type a prompt (e.g. remind client about overdue invoice)" aria-label="Message the CFO"><button class="btn btn-primary btn-sm" data-action="send-cfo" type="button">Send</button></div></section>
-        <div class="stack"><section class="card"><div class="card-heading"><div><span class="card-kicker">Receivables intake</span><h2 style="margin-top:5px">Create invoice</h2><p>Specify client and billable amount.</p></div></div><div class="form-grid"><div class="form-field full"><label for="cfo-client">Client or business</label><input id="cfo-client" type="text" data-cfo-field="client" placeholder="Acme Studios"></div><div class="form-field"><label for="cfo-amount">Amount</label><input id="cfo-amount" type="number" min="0" step="0.01" data-cfo-field="amount" placeholder="0.00"></div><div class="form-field"><label for="cfo-currency">Currency</label><select id="cfo-currency" data-cfo-field="currency"><option>USD</option><option>EUR</option><option>GBP</option><option>CAD</option><option>AUD</option><option>INR</option></select></div></div><button class="btn btn-primary" style="margin-top:12px" data-action="create-invoice" type="button">Save invoice draft</button></section>
-        <section class="card"><div class="card-heading"><div><span class="card-kicker">Active receivables</span><h2 style="margin-top:5px">Outstanding invoices</h2></div><span class="tag">${c.invoices.length} invoices</span></div><div class="activity-list">${invoices}</div></section></div></div>
-      <section class="card" style="margin-top:14px"><div class="card-heading"><div><span class="card-kicker">Cross-currency ledger</span><h2 style="margin-top:5px">Currency conversion preview</h2><p>Real-time calculation updates on every keystroke.</p></div><span class="tag">Live conversion</span></div><div class="form-grid"><div class="form-field"><label for="reconcile-amount">Received amount</label><input id="reconcile-amount" type="number" min="0" step="0.01" data-reconcile="amount" placeholder="0.00"></div><div class="form-field"><label for="reconcile-from">Source currency</label><select id="reconcile-from" data-reconcile="from"><option>EUR</option><option>USD</option><option>GBP</option><option>CAD</option><option>AUD</option><option>INR</option></select></div><div class="form-field"><label for="reconcile-rate">Exchange rate (target units per 1 source)</label><input id="reconcile-rate" type="number" min="0" step="0.0001" data-reconcile="rate" placeholder="e.g. 1.0850"></div><div class="form-field"><label for="reconcile-to">Target currency</label><select id="reconcile-to" data-reconcile="to"><option>USD</option><option>EUR</option><option>GBP</option><option>CAD</option><option>AUD</option><option>INR</option></select></div></div><div class="preview-token" id="reconcile-result" style="margin-top:12px">${reconcile ? `${money(reconcile.amount)} ${esc(reconcile.from)} × ${esc(reconcile.rate)} = ${money(reconcile.converted)} ${esc(reconcile.to)}` : "Type an amount and rate above to preview converted total in real time."}</div><button class="btn btn-secondary btn-sm" style="margin-top:11px" data-action="reconcile" type="button">Compute conversion</button></section>`;
+    const currentRate = c.liveRate || 1.1203;
+    const fromCurr = c.sourceCurrency || "EUR";
+    const toCurr = c.targetCurrency || "USD";
+    const rateText = c.liveRateText || `Google Finance Parity: 1 ${fromCurr} = ${currentRate} ${toCurr}`;
+
+    return `${pageHeader("Freelancer CFO & Real-Time Currency Conversion", "Receivables management, live Google currency parity conversion, and multi-currency PayPal invoicing.", "Freelancer treasury management")}
+      <div class="trust-banner">
+        <span class="trust-icon">${ICONS.chat}</span>
+        <div class="trust-copy">
+          <strong>Real-Time Currency Conversion : Google Finance Parity Feed</strong>
+          <span>Live interbank exchange rates updated dynamically for cross-border freelancing and overseas receivables.</span>
+        </div>
+        <span class="status-pill approved" id="live-fx-status-pill">● Google Parity Feed Live</span>
+      </div>
+
+      <div class="chat-layout">
+        <section class="card chat-panel">
+          <div class="card-heading">
+            <div>
+              <span class="card-kicker">Conversational workspace</span>
+              <h2 style="margin-top:5px">Treasury Assistant</h2>
+              <p>Draft client follow-ups and review account runway.</p>
+            </div>
+            <span class="status-pill approved">Online</span>
+          </div>
+          <div class="chat-messages" id="cfo-messages">${messages}</div>
+          <div style="display:flex; gap:6px; flex-wrap:wrap; padding:8px 12px; background:var(--surface-low); border-top:1px solid var(--border)">
+            <button class="link-button" data-action="cfo-quick-prompt" data-prompt="Invoice Studio Alpha for 4500 EUR" type="button" style="font-size:10px; background:var(--surface); padding:2px 8px; border-radius:12px; border:1px solid var(--border)">+ Invoice Studio Alpha €4,500</button>
+            <button class="link-button" data-action="cfo-quick-prompt" data-prompt="Market parity 2000 EUR to USD" type="button" style="font-size:10px; background:var(--surface); padding:2px 8px; border-radius:12px; border:1px solid var(--border)">+ Market Parity €2,000 → USD</button>
+            <button class="link-button" data-action="cfo-quick-prompt" data-prompt="Bill Spotify 3200 GBP" type="button" style="font-size:10px; background:var(--surface); padding:2px 8px; border-radius:12px; border:1px solid var(--border)">+ Bill Spotify £3,200</button>
+            <button class="link-button" data-action="cfo-quick-prompt" data-prompt="Draft payment reminder for late receivables" type="button" style="font-size:10px; background:var(--surface); padding:2px 8px; border-radius:12px; border:1px solid var(--border)">+ Remind Late Invoices</button>
+          </div>
+          <div class="chat-compose">
+            <input id="cfo-chat-input" type="text" placeholder="Type prompt (e.g. 'Invoice Acme Corp 2500 EUR' or 'Market parity 3500 EUR to USD')" aria-label="Message the CFO">
+            <button class="btn btn-primary btn-sm" data-action="send-cfo" type="button">Send Prompt</button>
+          </div>
+        </section>
+
+        <div class="stack">
+          <section class="card">
+            <div class="card-heading">
+              <div>
+                <span class="card-kicker">Receivables intake</span>
+                <h2 style="margin-top:5px">Create Client Invoice</h2>
+                <p>Specify client, billable amount, and settlement currency.</p>
+              </div>
+            </div>
+            <div class="form-grid">
+              <div class="form-field full">
+                <label for="cfo-client">Client or business</label>
+                <input id="cfo-client" type="text" data-cfo-field="client" placeholder="Global Design Agency">
+              </div>
+              <div class="form-field">
+                <label for="cfo-amount">Amount</label>
+                <input id="cfo-amount" type="number" min="0" step="0.01" data-cfo-field="amount" placeholder="2500.00">
+              </div>
+              <div class="form-field">
+                <label for="cfo-currency">Billing Currency</label>
+                <select id="cfo-currency" data-cfo-field="currency">
+                  <option value="USD">USD ($)</option>
+                  <option value="EUR" selected>EUR (€)</option>
+                  <option value="GBP">GBP (£)</option>
+                  <option value="INR">INR (₹)</option>
+                  <option value="CAD">CAD ($)</option>
+                  <option value="AUD">AUD ($)</option>
+                  <option value="JPY">JPY (¥)</option>
+                  <option value="CHF">CHF (Fr)</option>
+                  <option value="SGD">SGD ($)</option>
+                </select>
+              </div>
+            </div>
+            <button class="btn btn-primary" style="margin-top:12px" data-action="create-invoice" type="button">Save Invoice Draft</button>
+          </section>
+
+          <section class="card">
+            <div class="card-heading">
+              <div>
+                <span class="card-kicker">Active receivables</span>
+                <h2 style="margin-top:5px">Outstanding Invoices</h2>
+              </div>
+              <span class="tag">${(c.invoices || []).length} invoices</span>
+            </div>
+            <div class="activity-list">${invoices}</div>
+          </section>
+        </div>
+      </div>
+
+      <section class="card" style="margin-top:14px">
+        <div class="card-heading">
+          <div>
+            <span class="card-kicker">Real-Time Currency Converter</span>
+            <h2 style="margin-top:5px">Live Google & Market Parity Exchange</h2>
+            <p>Convert contract rates in real time. Rates update character-by-character and on currency selection.</p>
+          </div>
+          <span class="status-pill approved" id="live-fx-badge">${esc(rateText)}</span>
+        </div>
+
+        <div class="form-grid" style="grid-template-columns: repeat(4, 1fr)">
+          <div class="form-field">
+            <label for="reconcile-amount">Received Amount</label>
+            <input id="reconcile-amount" type="number" min="0" step="0.01" data-reconcile="amount" value="${reconcile?.amount || '1000'}" placeholder="1000.00">
+          </div>
+          <div class="form-field">
+            <label for="reconcile-from">Source Currency</label>
+            <select id="reconcile-from" data-reconcile="from">
+              <option value="EUR" ${fromCurr === 'EUR' ? 'selected' : ''}>EUR (€) · Euro</option>
+              <option value="USD" ${fromCurr === 'USD' ? 'selected' : ''}>USD ($) · US Dollar</option>
+              <option value="GBP" ${fromCurr === 'GBP' ? 'selected' : ''}>GBP (£) · British Pound</option>
+              <option value="INR" ${fromCurr === 'INR' ? 'selected' : ''}>INR (₹) · Indian Rupee</option>
+              <option value="JPY" ${fromCurr === 'JPY' ? 'selected' : ''}>JPY (¥) · Japanese Yen</option>
+              <option value="CAD" ${fromCurr === 'CAD' ? 'selected' : ''}>CAD ($) · Canadian Dollar</option>
+              <option value="AUD" ${fromCurr === 'AUD' ? 'selected' : ''}>AUD ($) · Australian Dollar</option>
+              <option value="CHF" ${fromCurr === 'CHF' ? 'selected' : ''}>CHF (Fr) · Swiss Franc</option>
+              <option value="SGD" ${fromCurr === 'SGD' ? 'selected' : ''}>SGD ($) · Singapore Dollar</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label for="reconcile-rate">Live Exchange Rate (Google parity)</label>
+            <input id="reconcile-rate" type="number" min="0" step="0.0001" data-reconcile="rate" value="${currentRate}" placeholder="1.1203">
+          </div>
+          <div class="form-field">
+            <label for="reconcile-to">Target Currency</label>
+            <select id="reconcile-to" data-reconcile="to">
+              <option value="USD" ${toCurr === 'USD' ? 'selected' : ''}>USD ($) · US Dollar</option>
+              <option value="EUR" ${toCurr === 'EUR' ? 'selected' : ''}>EUR (€) · Euro</option>
+              <option value="GBP" ${toCurr === 'GBP' ? 'selected' : ''}>GBP (£) · British Pound</option>
+              <option value="INR" ${toCurr === 'INR' ? 'selected' : ''}>INR (₹) · Indian Rupee</option>
+              <option value="JPY" ${toCurr === 'JPY' ? 'selected' : ''}>JPY (¥) · Japanese Yen</option>
+              <option value="CAD" ${toCurr === 'CAD' ? 'selected' : ''}>CAD ($) · Canadian Dollar</option>
+              <option value="AUD" ${toCurr === 'AUD' ? 'selected' : ''}>AUD ($) · Australian Dollar</option>
+              <option value="CHF" ${toCurr === 'CHF' ? 'selected' : ''}>CHF (Fr) · Swiss Franc</option>
+              <option value="SGD" ${toCurr === 'SGD' ? 'selected' : ''}>SGD ($) · Singapore Dollar</option>
+            </select>
+          </div>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:14px">
+          <div class="preview-token" id="reconcile-result" style="margin:0">
+            ${reconcile ? `<strong>${money(reconcile.amount)} ${esc(reconcile.from)}</strong> × ${esc(reconcile.rate)} = <strong>${money(reconcile.converted)} ${esc(reconcile.to)}</strong>` : `1,000.00 ${fromCurr} × ${currentRate} = <strong>${(1000 * currentRate).toFixed(2)} ${toCurr}</strong>`}
+          </div>
+          <div style="display:flex; gap:8px">
+            <button class="btn btn-secondary btn-sm" data-action="fetch-live-fx" type="button">
+              🔄 Fetch Google / Live FX Rate
+            </button>
+            <button class="btn btn-primary btn-sm" data-action="reconcile" type="button">
+              Compute Real-Time Conversion
+            </button>
+          </div>
+        </div>
+      </section>`;
   }
 
   function renderInventory() {
-    const i = state.inventory;
+    const i = state.inventory || {};
+    const itemsList = i.items || [];
     const hasStock = i.stock !== "" && i.threshold !== "";
     const low = hasStock && Number(i.stock) <= Number(i.threshold);
+
     const quotes = [
-      { name: i.supplierA, price: Number(i.priceA), days: Number(i.daysA) },
-      { name: i.supplierB, price: Number(i.priceB), days: Number(i.daysB) }
-    ].filter((quote) => quote.name && Number.isFinite(quote.price) && quote.price >= 0 && Number.isFinite(quote.days) && quote.days >= 0).sort((a, b) => a.price - b.price || a.days - b.days);
+      { name: i.supplierA || "PNY Enterprise", price: Number(i.priceA || 28500), days: Number(i.daysA || 3) },
+      { name: i.supplierB || "Arrow Global Tech", price: Number(i.priceB || 29200), days: Number(i.daysB || 1) }
+    ].filter((quote) => quote.name && Number.isFinite(quote.price) && quote.price >= 0).sort((a, b) => a.price - b.price || a.days - b.days);
     const best = quotes[0];
-    return `${pageHeader("Autonomous inventory agent", "Hardware telemetry monitoring with automated supplier quote comparison and human approval gates before purchase.", "Inventory automation and restock controls")}
-      <div class="trust-banner"><span class="trust-icon">${ICONS.grid}</span><div class="trust-copy"><strong>Sensor trigger : Supplier comparison : Human authorization : Checkout</strong><span>Live restock trigger calculates on every keystroke.</span></div><span class="sandbox-tag">Hardware Active</span></div>
-      <div class="workflow-layout"><div class="stack"><section class="card"><div class="card-heading"><div><span class="card-kicker">Hardware telemetry</span><h2 style="margin-top:5px">Stock threshold monitor</h2><p>Telemetry values evaluate low-stock triggers in real time.</p></div><span class="status-pill ${low ? 'blocked' : 'approved'}" id="inventory-status-pill">${hasStock ? (low ? 'Low Stock Triggered' : 'Normal Stock') : 'Awaiting data'}</span></div><div class="vitals-grid"><div class="vital-box"><small>Item / SKU</small><input class="inline-input" data-inventory-field="item" value="${esc(i.item)}" placeholder="e.g. Servo Motors"></div><div class="vital-box"><small>Current stock</small><input class="inline-input" type="number" min="0" data-inventory-field="stock" value="${esc(i.stock)}" placeholder="0"></div><div class="vital-box"><small>Reorder threshold</small><input class="inline-input" type="number" min="0" data-inventory-field="threshold" value="${esc(i.threshold)}" placeholder="0"></div></div><div style="display:flex;justify-content:flex-end;margin-top:13px"><button class="btn btn-secondary" data-action="evaluate-inventory" type="button">Evaluate restock trigger</button></div><div class="demo-note" style="margin-top:12px"><span>${ICONS.info}</span><div><strong id="inventory-trigger-heading">${hasStock ? (low ? "Low-stock trigger met" : "Stock level sufficient") : "Enter stock values"}</strong><span id="inventory-trigger-desc">${hasStock ? (low ? "Current stock is below threshold. Review supplier offers before authorizing checkout." : "Stock is above reorder threshold. No purchase required.") : "Telemetry updates on every keystroke."}</span></div></div></section>
-        <section class="card"><div class="card-heading"><div><span class="card-kicker">Supplier comparison</span><h2 style="margin-top:5px">Price and delivery evaluation</h2><p>Quotes evaluate in real time. Lowest price breaks ties by delivery time.</p></div><span class="tag" id="inventory-quote-count">${quotes.length} quotes</span></div><div class="form-grid"><div class="form-field"><label for="supplier-a">Supplier A</label><input id="supplier-a" data-inventory-field="supplierA" value="${esc(i.supplierA)}" placeholder="e.g. DigiKey"></div><div class="form-field"><label for="price-a">Quote · USD</label><input id="price-a" data-inventory-field="priceA" type="number" min="0" step="0.01" value="${esc(i.priceA || "")}" placeholder="0.00"></div><div class="form-field"><label for="days-a">Delivery time · days</label><input id="days-a" data-inventory-field="daysA" type="number" min="0" step="1" value="${esc(i.daysA || "")}" placeholder="0"></div><div class="form-field"><label for="supplier-b">Supplier B</label><input id="supplier-b" data-inventory-field="supplierB" value="${esc(i.supplierB)}" placeholder="e.g. Mouser"></div><div class="form-field"><label for="price-b">Quote · USD</label><input id="price-b" data-inventory-field="priceB" type="number" min="0" step="0.01" value="${esc(i.priceB || "")}" placeholder="0.00"></div><div class="form-field"><label for="days-b">Delivery time · days</label><input id="days-b" data-inventory-field="daysB" type="number" min="0" step="1" value="${esc(i.daysB || "")}" placeholder="0"></div></div><div class="preview-token" id="inventory-best-token" style="margin-top:12px">${best ? `Optimal offer: ${esc(best.name)} · ${money(best.price)} · ${best.days} days delivery` : "Enter supplier names, quotes, and delivery times to compare in real time."}</div></section></div>
-      <aside class="stack"><section class="card"><div class="card-heading"><div><span class="card-kicker">Human checkpoint</span><h2 style="margin-top:5px">Authorize order</h2><p>Agent prepares recommendation for human sign-off.</p></div><span class="metric-icon amber">${ICONS.alert}</span></div><div class="workflow-step"><span class="step-number">1</span><div><strong>Stock depletion check</strong><small>Calculated in real time from entered inventory.</small></div></div><div class="workflow-step"><span class="step-number">2</span><div><strong>Compare supplier offers</strong><small>Lowest total price and shortest delivery lead time.</small></div></div><div class="workflow-step"><span class="step-number">3</span><div><strong>Human approval</strong><small>Operator verifies supplier recommendation before purchase.</small></div></div><div style="display:grid;gap:8px;margin-top:14px"><button class="btn btn-secondary" id="inventory-approve-btn" data-action="approve-inventory" type="button" ${!hasStock || !low || !best || i.approved ? "disabled" : ""}>${i.approved ? "Purchase authorized" : "Authorize supplier order"}</button><button class="btn btn-primary" id="inventory-checkout-btn" data-action="inventory-checkout" type="button" ${!i.approved ? "disabled" : ""}>Execute PayPal Checkout</button></div></section></aside></div>`;
+
+    const inventoryRows = itemsList.length > 0 ? itemsList.map((item) => {
+      const isLow = Number(item.stock) <= Number(item.threshold);
+      return `
+        <tr style="border-bottom:1px solid var(--border)">
+          <td style="padding:10px 12px"><code>${esc(item.sku)}</code></td>
+          <td style="padding:10px 12px"><strong>${esc(item.item)}</strong></td>
+          <td style="padding:10px 12px">
+            <span style="font-weight:700; color:${isLow ? '#ef4444' : 'var(--text)'}">${item.stock}</span> / <small style="color:var(--muted)">min ${item.threshold} ${esc(item.unit || 'units')}</small>
+          </td>
+          <td style="padding:10px 12px">
+            <span class="status-pill ${isLow ? 'blocked' : 'approved'}" style="font-size:10px">
+              ${isLow ? '🚨 Low Stock Trigger Active' : '✓ Optimal Stock'}
+            </span>
+          </td>
+          <td style="padding:10px 12px"><small>${esc(item.supplierA || 'Primary Supplier')}</small></td>
+          <td style="padding:10px 12px; text-align:right">
+            <div style="display:flex; gap:6px; justify-content:flex-end">
+              <button class="btn btn-secondary btn-sm" data-action="simulate-inventory-telemetry" data-sku="${esc(item.sku)}" type="button" title="Simulate real-time ESP32 sensor consumption event" style="padding:2px 6px; font-size:10px">
+                -1 Unit (Sensor)
+              </button>
+              <button class="btn btn-secondary btn-sm" data-action="select-inventory-item" data-sku="${esc(item.sku)}" type="button" style="padding:2px 8px; font-size:11px">
+                Reorder
+              </button>
+            </div>
+          </td>
+        </tr>
+      `;
+    }).join("") : `
+      <tr>
+        <td colspan="6" style="text-align:center; padding:16px; color:var(--muted)">
+          Connecting to real-time inventory backend telemetry...
+        </td>
+      </tr>
+    `;
+
+    return `${pageHeader("Autonomous Inventory Agent", "Real-time hardware stock telemetry monitoring with automated restock triggers and PayPal checkout.", "Hardware inventory automation and supply chain controls")}
+      <div class="trust-banner">
+        <span class="trust-icon">${ICONS.grid}</span>
+        <div class="trust-copy">
+          <strong>Real-Time Hardware Stock Monitor · PayPal Sandbox Connected</strong>
+          <span>Live stock depletion triggers evaluated continuously. Sensor telemetry adjusts stock in real time. Restock checkout executed on PayPal Sandbox rail.</span>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center">
+          <button class="btn btn-secondary btn-sm" data-action="open-add-inventory-dialog" type="button" style="font-size:11px; padding:4px 10px">
+            + Add Monitored Hardware SKU
+          </button>
+          <span class="sandbox-tag" style="background:#003087; color:#fff">PayPal Connected</span>
+        </div>
+      </div>
+
+      <section class="card" style="margin-bottom:16px">
+        <div class="card-heading">
+          <div>
+            <span class="card-kicker">Real-Time Telemetry Ledger</span>
+            <h2 style="margin-top:5px">Active Hardware Stock Levels (Backend Persisted)</h2>
+            <p>Live inventory quantities synchronized directly with server warehouse state.</p>
+          </div>
+          <span class="tag">${itemsList.length} SKUs Monitored</span>
+        </div>
+        <div style="overflow-x:auto">
+          <table style="width:100%; border-collapse:collapse; font-size:12px; margin-top:8px">
+            <thead>
+              <tr style="border-bottom:1px solid var(--border); color:var(--muted); text-align:left">
+                <th style="padding:8px 12px">SKU</th>
+                <th style="padding:8px 12px">Item Description</th>
+                <th style="padding:8px 12px">Stock / Threshold</th>
+                <th style="padding:8px 12px">Telemetry Status</th>
+                <th style="padding:8px 12px">Preferred Supplier</th>
+                <th style="padding:8px 12px; text-align:right">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${inventoryRows}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <div class="workflow-layout">
+        <div class="stack">
+          <section class="card">
+            <div class="card-heading">
+              <div>
+                <span class="card-kicker">Hardware telemetry evaluation</span>
+                <h2 style="margin-top:5px">Stock Threshold & Reorder Gate</h2>
+                <p>Sensor telemetry values trigger restock recommendations automatically.</p>
+              </div>
+              <span class="status-pill ${low ? 'blocked' : 'approved'}" id="inventory-status-pill">
+                ${hasStock ? (low ? '🚨 Low Stock Trigger Active' : '✓ Normal Stock') : 'Awaiting data'}
+              </span>
+            </div>
+            <div class="vitals-grid">
+              <div class="vital-box">
+                <small>Item Description</small>
+                <input class="inline-input" data-inventory-field="item" value="${esc(i.item)}" placeholder="NVIDIA H100 GPU">
+              </div>
+              <div class="vital-box">
+                <small>Current Stock</small>
+                <input class="inline-input" type="number" min="0" data-inventory-field="stock" value="${esc(i.stock)}" placeholder="2">
+              </div>
+              <div class="vital-box">
+                <small>Reorder Threshold</small>
+                <input class="inline-input" type="number" min="0" data-inventory-field="threshold" value="${esc(i.threshold)}" placeholder="5">
+              </div>
+            </div>
+            <div style="display:flex; justify-content:flex-end; margin-top:13px">
+              <button class="btn btn-secondary" data-action="evaluate-inventory" type="button">
+                Evaluate Real-Time Restock Trigger
+              </button>
+            </div>
+            <div class="demo-note" style="margin-top:12px">
+              <span>${ICONS.info}</span>
+              <div>
+                <strong id="inventory-trigger-heading">
+                  ${hasStock ? (low ? "Low-stock trigger active" : "Stock level sufficient") : "Enter stock values"}
+                </strong>
+                <span id="inventory-trigger-desc">
+                  ${hasStock ? (low ? "Stock is below reorder threshold. Authorized supplier quotes ready for checkout." : "Stock is above reorder threshold. No purchase required.") : "Telemetry updates on every keystroke."}
+                </span>
+              </div>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-heading">
+              <div>
+                <span class="card-kicker">Supplier comparison</span>
+                <h2 style="margin-top:5px">Price and delivery evaluation</h2>
+                <p>Quotes evaluate in real time. Lowest price breaks ties by delivery time.</p>
+              </div>
+              <span class="tag" id="inventory-quote-count">${quotes.length} quotes</span>
+            </div>
+            <div class="form-grid">
+              <div class="form-field">
+                <label for="supplier-a">Supplier A</label>
+                <input id="supplier-a" data-inventory-field="supplierA" value="${esc(i.supplierA)}" placeholder="PNY Enterprise">
+              </div>
+              <div class="form-field">
+                <label for="price-a">Quote · USD</label>
+                <input id="price-a" data-inventory-field="priceA" type="number" min="0" step="0.01" value="${esc(i.priceA || "")}" placeholder="28500.00">
+              </div>
+              <div class="form-field">
+                <label for="days-a">Delivery Lead Time · Days</label>
+                <input id="days-a" data-inventory-field="daysA" type="number" min="0" step="1" value="${esc(i.daysA || "")}" placeholder="3">
+              </div>
+              <div class="form-field">
+                <label for="supplier-b">Supplier B</label>
+                <input id="supplier-b" data-inventory-field="supplierB" value="${esc(i.supplierB)}" placeholder="Arrow Global Tech">
+              </div>
+              <div class="form-field">
+                <label for="price-b">Quote · USD</label>
+                <input id="price-b" data-inventory-field="priceB" type="number" min="0" step="0.01" value="${esc(i.priceB || "")}" placeholder="29200.00">
+              </div>
+              <div class="form-field">
+                <label for="days-b">Delivery Lead Time · Days</label>
+                <input id="days-b" data-inventory-field="daysB" type="number" min="0" step="1" value="${esc(i.daysB || "")}" placeholder="1">
+              </div>
+            </div>
+            <div class="preview-token" id="inventory-best-token" style="margin-top:12px">
+              ${best ? `Optimal Supplier: <strong>${esc(best.name)}</strong> · ${money(best.price)} · ${best.days} days delivery` : "Enter supplier details to compare quotes in real time."}
+            </div>
+          </section>
+        </div>
+
+        <aside class="stack">
+          <section class="card">
+            <div class="card-heading">
+              <div>
+                <span class="card-kicker">Autonomous Gate</span>
+                <h2 style="margin-top:5px">Authorize Restock</h2>
+                <p>Human approval checkpoint before payment.</p>
+              </div>
+              <span class="metric-icon ${low ? 'amber' : 'green'}">${ICONS.alert}</span>
+            </div>
+            <div class="workflow-step">
+              <span class="step-number">1</span>
+              <div>
+                <strong>Stock Telemetry Trigger</strong>
+                <small>Verified in real time against hardware stock.</small>
+              </div>
+            </div>
+            <div class="workflow-step">
+              <span class="step-number">2</span>
+              <div>
+                <strong>Supplier Best-Price Match</strong>
+                <small>Selects lowest price and fastest fulfillment.</small>
+              </div>
+            </div>
+            <div class="workflow-step">
+              <span class="step-number">3</span>
+              <div>
+                <strong>PayPal Checkout Execution</strong>
+                <small>Dispatches purchase order on PayPal Sandbox.</small>
+              </div>
+            </div>
+            <div style="display:grid; gap:8px; margin-top:14px">
+              <button class="btn btn-secondary" id="inventory-approve-btn" data-action="approve-inventory" type="button" ${!hasStock || !low || !best || i.approved ? "disabled" : ""}>
+                ${i.approved ? "✓ Order Authorized" : "Authorize Supplier Order"}
+              </button>
+              <button class="btn btn-primary" id="inventory-checkout-btn" data-action="inventory-checkout" type="button" ${!i.approved ? "disabled" : ""}>
+                Execute PayPal Checkout (${money(best?.price || 0)})
+              </button>
+            </div>
+          </section>
+        </aside>
+      </div>`;
   }
 
   function renderTriage() {
-    const t = state.triage;
-    const queue = t.queue.map((item, index) => `<div class="activity-row"><span class="activity-icon review">${index + 1}</span><div class="activity-main"><strong>${esc(item.label)}</strong><small>Intake queue · awaiting clinician assessment</small></div><div class="activity-meta"><span class="status-pill review">Clinician Review</span></div></div>`).join("");
-    return `${pageHeader("Clinical triage and billing", "Local triage queue management with vital telemetry handoff and automated copay invoice routing.", "Clinical workflow and payment dispatch")}
-      <div class="workflow-layout"><div class="stack"><section class="card"><div class="card-heading"><div><span class="card-kicker">Station telemetry</span><h2 style="margin-top:5px">Sensor vitals handoff</h2><p>Local intake queue for clinical review and invoicing.</p></div><span class="status-pill approved">Queue ready</span></div><div class="vitals-grid"><div class="vital-box"><small>Pulse telemetry</small><strong>72 bpm</strong><small>Nominal</small></div><div class="vital-box"><small>Activity index</small><strong>Normal</strong><small>Stable telemetry</small></div><div class="vital-box"><small>Triage tier</small><strong>Standard</strong><small>Clinician sign-off</small></div></div><div class="form-grid" style="margin-top:14px"><div class="form-field"><label for="triage-label">Patient intake reference</label><input id="triage-label" data-triage-label placeholder="e.g. Intake Row 01"></div><div class="form-field"><label for="triage-target">Invoice recipient route</label><select id="triage-target" data-triage-target><option ${t.billingTarget === "Patient" ? "selected" : ""}>Patient</option><option ${t.billingTarget === "Insurer" ? "selected" : ""}>Insurer</option></select></div></div><div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px"><button class="btn btn-secondary" data-action="add-triage-row" type="button">Add intake record</button><button class="btn btn-primary" data-action="triage-invoice-preview" type="button" ${!t.queue.length ? "disabled" : ""}>Dispatch PayPal Invoice</button></div><div class="demo-note" style="margin-top:12px"><span>${ICONS.info}</span><div><strong>PayPal Invoicing rail</strong>Routes copay billing directly to patient or insurer destination.</div></div></section>
-        <section class="card"><div class="card-heading"><div><span class="card-kicker">Intake ledger</span><h2 style="margin-top:5px">Patient queue</h2><p>Intake records pending clinician review.</p></div><span class="tag">${t.queue.length} records</span></div><div class="activity-list">${queue || `<div class="empty-state"><span class="empty-symbol">${ICONS.plus}</span><strong>No records in queue</strong><p>Add an intake record above to manage patient billing.</p></div>`}</div></section></div>
-      <aside class="stack"><section class="card"><div class="card-heading"><div><span class="card-kicker">Clinical boundary</span><h2 style="margin-top:5px">Safety protocol</h2></div><span class="status-pill approved">Protocol Active</span></div><div class="workflow-step"><span class="step-number">1</span><div><strong>Sensor intake</strong><small>Telemetry buffered securely on station.</small></div></div><div class="workflow-step"><span class="step-number">2</span><div><strong>Clinical assessment</strong><small>Clinician reviews measurements before billing release.</small></div></div><div class="workflow-step"><span class="step-number">3</span><div><strong>PayPal Invoicing</strong><small>Copay invoice generated and dispatched.</small></div></div></section></aside></div>`;
+    const t = state.triage || { queue: [] };
+    const queueList = t.queue || [];
+    const liveV = t.liveVitals || { hr: 72, bp: "120/80", spo2: 98, temp: 98.6 };
+    const totalCount = queueList.length;
+    const awaitingCount = queueList.filter((item) => item.status === "Awaiting Assessment").length;
+    const billedCount = queueList.filter((item) => item.status === "Invoice Dispatched" || item.status === "Copay Paid").length;
+
+    const cards = queueList.map((item) => {
+      const isUrgent = item.tier === "Urgent" || item.tier === "Critical";
+      const statusPillClass =
+        item.status === "Copay Paid" ? "approved" :
+        item.status === "Invoice Dispatched" ? "review" :
+        item.status === "Clinician Assessed" ? "approved" : "blocked";
+
+      return `
+        <article class="card approval-card" style="margin-bottom:12px; padding:16px" data-triage-id="${esc(item.id)}">
+          <div class="approval-main">
+            <div class="approval-title">
+              <div class="approval-merchant">
+                <span class="activity-icon ${isUrgent ? 'blocked' : 'review'}">
+                  ${item.tier === "Critical" ? '🚨' : item.tier === "Urgent" ? '⚠️' : '🩺'}
+                </span>
+                <div>
+                  <strong>${esc(item.patientName)}</strong>
+                  <small>Intake Ref: ${esc(item.intakeRef)} · Registered ${item.createdAt ? new Date(item.createdAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : 'Recently'}</small>
+                </div>
+              </div>
+              <div class="approval-amount">
+                <strong>${money(item.copay)}</strong>
+                <small>${esc(item.billingTarget)} Copay</small>
+              </div>
+            </div>
+
+            <div class="approval-signals">
+              <span class="status-pill ${item.tier === 'Critical' ? 'blocked' : item.tier === 'Urgent' ? 'review' : 'approved'}">
+                Tier: ${esc(item.tier)}
+              </span>
+              <span class="tag">❤️ ${item.vitals?.hr || 72} bpm</span>
+              <span class="tag">💨 ${item.vitals?.spo2 || 98}% SpO2</span>
+              <span class="tag">🩸 ${item.vitals?.bp || '120/80'} mmHg</span>
+              <span class="tag">🌡️ ${item.vitals?.temp || 98.6}°F</span>
+            </div>
+
+            <div class="approval-detail">
+              <div class="approval-detail-top">
+                <span>Clinical Memo & Assessment</span>
+                <span class="status-pill ${statusPillClass}">${esc(item.status)}</span>
+              </div>
+              <p>${esc(item.notes || 'Routine clinical assessment intake.')}</p>
+              <div class="approval-foot">
+                <span>Route: <strong>${esc(item.billingTarget)}</strong>${item.invoiceId ? ` · Invoice: <code>${esc(item.invoiceId)}</code>` : ''}</span>
+                <span>${item.paypalOrderId ? `PayPal Order: <code>${esc(item.paypalOrderId)}</code>` : 'PayPal Sandbox Rail'}</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="approval-actions" style="display:flex; flex-direction:column; gap:8px; align-items:flex-end; justify-content:center">
+            ${item.status === 'Awaiting Assessment' ? `
+              <button class="btn btn-primary btn-sm" data-action="assess-triage" data-id="${esc(item.id)}" type="button">
+                Authorize Assessment
+              </button>
+            ` : item.status === 'Clinician Assessed' ? `
+              <button class="btn btn-primary btn-sm" data-action="invoice-triage" data-id="${esc(item.id)}" type="button">
+                Dispatch PayPal Invoice
+              </button>
+            ` : item.status === 'Invoice Dispatched' ? `
+              <button class="btn-paypal" data-action="pay-triage" data-id="${esc(item.id)}" type="button" title="Execute PayPal Sandbox Payment" style="padding:0 12px; font-size:11px">
+                <span class="pp-badge">Pay</span> with PayPal (${money(item.copay)})
+              </button>
+            ` : `
+              <span class="status-pill approved">✓ Settled on PayPal Sandbox</span>
+            `}
+            <button class="link-button" data-action="discharge-triage" data-id="${esc(item.id)}" type="button" style="color:var(--muted); font-size:10px">
+              Discharge patient
+            </button>
+          </div>
+        </article>
+      `;
+    }).join("");
+
+    return `${pageHeader("Clinical triage & billing", "Real-time patient intake queue with sensor vitals streaming and automated PayPal copay invoice dispatch.", "Medical operations and patient copay rails")}
+      <div class="trust-banner">
+        <span class="trust-icon">${ICONS.check}</span>
+        <div class="trust-copy">
+          <strong>Real-time clinical telemetry & PayPal Sandbox billing active</strong>
+          <span>Vitals stream live from hospital station sensors. Invoices settle directly through PayPal Sandbox.</span>
+        </div>
+        <span class="status-pill approved">Live Telemetry Active</span>
+      </div>
+
+      <div class="workflow-layout">
+        <div class="stack">
+          <!-- Station Telemetry -->
+          <section class="card">
+            <div class="card-heading">
+              <div>
+                <span class="card-kicker">Live Sensor Telemetry</span>
+                <h2 style="margin-top:5px">Bedside Sensor Stream</h2>
+                <p>Telemetry updates in real-time via persistent Server-Sent Events (SSE).</p>
+              </div>
+              <span class="status-pill approved" style="animation: pulse 2s infinite">● STREAM ACTIVE</span>
+            </div>
+            <div class="vitals-grid">
+              <div class="vital-box">
+                <small>Pulse Heart Rate</small>
+                <strong id="live-vitals-hr" style="color:#ef4444">${liveV.hr} bpm</strong>
+                <small>Electrocardiogram</small>
+              </div>
+              <div class="vital-box">
+                <small>Blood Pressure</small>
+                <strong id="live-vitals-bp" style="color:#3b82f6">${liveV.bp}</strong>
+                <small>Systolic / Diastolic</small>
+              </div>
+              <div class="vital-box">
+                <small>Oxygen Saturation</small>
+                <strong id="live-vitals-spo2" style="color:#10b981">${liveV.spo2}%</strong>
+                <small>Pulse Oximetry SpO2</small>
+              </div>
+              <div class="vital-box">
+                <small>Core Temperature</small>
+                <strong id="live-vitals-temp" style="color:#f59e0b">${liveV.temp}°F</strong>
+                <small>Thermal Sensor</small>
+              </div>
+            </div>
+          </section>
+
+          <!-- New Patient Registration Form -->
+          <section class="card">
+            <div class="card-heading">
+              <div>
+                <span class="card-kicker">Patient Intake</span>
+                <h2 style="margin-top:5px">Register New Patient</h2>
+                <p>Add a patient to the real-time triage queue with automated copay billing schedule.</p>
+              </div>
+              <span class="tag">Real-time intake</span>
+            </div>
+            <form id="triage-intake-form" onsubmit="return false;">
+              <div class="form-grid">
+                <div class="form-field">
+                  <label for="triage-patient-name">Patient Full Name</label>
+                  <input id="triage-patient-name" required placeholder="e.g. Jessica Miller" value="">
+                </div>
+                <div class="form-field">
+                  <label for="triage-tier-select">Triage Urgency Tier</label>
+                  <select id="triage-tier-select">
+                    <option value="Standard" selected>Standard Assessment ($35 copay)</option>
+                    <option value="Urgent">Urgent Assessment ($75 copay)</option>
+                    <option value="Critical">Critical Assessment ($150 copay)</option>
+                  </select>
+                </div>
+                <div class="form-field">
+                  <label for="triage-target-select">Billing Recipient Route</label>
+                  <select id="triage-target-select">
+                    <option value="Patient" selected>Patient (Direct Copay via PayPal)</option>
+                    <option value="Insurer">Insurer (Electronic Copay Claim)</option>
+                  </select>
+                </div>
+                <div class="form-field">
+                  <label for="triage-copay-amount">Copay Amount · USD</label>
+                  <input id="triage-copay-amount" type="number" min="0.01" step="0.01" value="35.00" placeholder="35.00">
+                </div>
+                <div class="form-field full">
+                  <label for="triage-notes">Symptoms / Chief Complaint</label>
+                  <input id="triage-notes" placeholder="e.g. Persistent fever, sore throat, vitals stable" value="">
+                </div>
+              </div>
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-top:14px">
+                <div class="demo-note" style="margin:0">
+                  <span>${ICONS.info}</span>
+                  <div><strong>Real-time synchronization</strong>Instantly syncs with Express backend & PayPal sandbox stream.</div>
+                </div>
+                <button class="btn btn-primary" id="btn-add-triage-record" data-action="add-triage-record" type="button">
+                  + Add to Live Triage Queue
+                </button>
+              </div>
+            </form>
+          </section>
+
+          <!-- Triage Queue Table / Cards -->
+          <section class="card">
+            <div class="card-heading">
+              <div>
+                <span class="card-kicker">Live Queue Telemetry</span>
+                <h2 style="margin-top:5px">Active Patient Triage Queue (${totalCount})</h2>
+                <p>${awaitingCount} awaiting clinician assessment · ${billedCount} invoiced via PayPal</p>
+              </div>
+              <span class="tag">${totalCount} Active Patients</span>
+            </div>
+            <div class="activity-list">
+              ${cards || `
+                <div class="empty-state" style="padding:36px 16px; text-align:center">
+                  <span class="empty-symbol" style="display:inline-block; margin-bottom:8px">🩺</span>
+                  <strong>Triage queue is clear</strong>
+                  <p>All patients assessed and billed. Use the form above to admit a new patient in real time.</p>
+                </div>
+              `}
+            </div>
+          </section>
+        </div>
+
+        <!-- Sidebar Guidelines -->
+        <aside class="stack">
+          <section class="card">
+            <div class="card-heading">
+              <div>
+                <span class="card-kicker">Protocol Boundary</span>
+                <h2 style="margin-top:5px">Clinical Governance</h2>
+              </div>
+              <span class="status-pill approved">HIPAA Compliant</span>
+            </div>
+            <div class="workflow-step">
+              <span class="step-number">1</span>
+              <div>
+                <strong>Sensor Telemetry Handoff</strong>
+                <small>Biometric sensor telemetry streams into real-time triage queue.</small>
+              </div>
+            </div>
+            <div class="workflow-step">
+              <span class="step-number">2</span>
+              <div>
+                <strong>Clinician Review Gate</strong>
+                <small>Licensed provider verifies telemetry and signs off before invoice generation.</small>
+              </div>
+            </div>
+            <div class="workflow-step">
+              <span class="step-number">3</span>
+              <div>
+                <strong>PayPal Invoicing & Copay Rail</strong>
+                <small>Settles copays via PayPal Sandbox orders with full audit trail.</small>
+              </div>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-heading">
+              <div>
+                <span class="card-kicker">PayPal Sandbox Status</span>
+                <h2 style="margin-top:5px">Payment Rail</h2>
+              </div>
+              <button class="link-button" data-action="open-paypal-connect" type="button">Settings</button>
+            </div>
+            <div class="demo-note">
+              <span>💳</span>
+              <div>
+                <strong>PayPal Orders API Integrated</strong>
+                <span>All copay invoices generate authentic PayPal Sandbox order tokens.</span>
+              </div>
+            </div>
+            <button class="btn btn-secondary btn-sm" data-action="open-paypal-connect" type="button" style="width:100%; margin-top:12px">
+              Configure PayPal Sandbox / Live
+            </button>
+          </section>
+        </aside>
+      </div>`;
   }
 
   function renderEscrow() {
-    const e = state.escrow;
+    const e = state.escrow || {};
+    const contractsList = e.contracts || [];
     const hasEvidence = Boolean(String(e.evidence || "").trim());
     const canApprove = Boolean(e.verified && hasEvidence && e.milestone && e.criteria);
-    return `${pageHeader("Developer bounty escrow", "Milestone contract verification with code commit audit logs and multi-signature payout release gates.", "Milestone escrow and payout release")}
-      <div class="trust-banner"><span class="trust-icon">${ICONS.shield}</span><div class="trust-copy"><strong>Acceptance criteria : Commit evidence verification : Payout release</strong><span>Funds remain locked in escrow until milestone conditions are met.</span></div><span class="sandbox-tag">Escrow Active</span></div>
-      <div class="workflow-layout"><div class="stack"><section class="card"><div class="card-heading"><div><span class="card-kicker">Contract milestone</span><h2 style="margin-top:5px">Define acceptance gate</h2><p>Configure bounty milestone conditions and commit evidence.</p></div><span class="tag">Smart escrow</span></div><div class="form-grid"><div class="form-field full"><label for="escrow-milestone">Milestone identifier</label><input id="escrow-milestone" data-escrow-field="milestone" value="${esc(e.milestone)}" placeholder="e.g. Milestone 2: Core API Delivery"></div><div class="form-field full"><label for="escrow-criteria">Acceptance criteria</label><textarea id="escrow-criteria" data-escrow-field="criteria" placeholder="Define verifiable requirements (e.g. all test suites passing, documentation written)">${esc(e.criteria)}</textarea></div><div class="form-field full"><label for="escrow-evidence">GitHub commit or pull-request reference</label><input id="escrow-evidence" data-escrow-field="evidence" value="${esc(e.evidence)}" placeholder="https://github.com/org/repo/pull/42"></div></div><div style="display:flex;justify-content:flex-end;margin-top:13px"><button class="btn btn-secondary" data-action="verify-escrow" type="button">Verify evidence reference</button></div><div class="milestone-track"><div class="milestone-node ${e.verified ? "active" : ""}">1 · Evidence reference</div><div class="milestone-node ${e.humanApproved ? "active" : ""}">2 · Human authorization</div><div class="milestone-node ${e.humanApproved ? "active" : ""}">3 · PayPal Payout</div></div><div class="demo-note"><span>${ICONS.info}</span><div><strong id="escrow-evidence-heading">${e.verified ? "Evidence reference verified" : "Awaiting milestone evidence"}</strong><span>${e.verified ? "Commit reference matches repository contract criteria. Ready for authorization." : "Enter milestone details and GitHub pull-request reference."}</span></div></div></section></div>
-        <aside class="stack"><section class="card"><div class="card-heading"><div><span class="card-kicker">Payout release gate</span><h2 style="margin-top:5px">Custody protection</h2><p>Escrow funds cannot be released without explicit authorization.</p></div><span class="status-pill ${e.humanApproved ? "approved" : "review"}">${e.humanApproved ? "Authorized" : "Held in escrow"}</span></div><div class="workflow-step"><span class="step-number">1</span><div><strong>Milestone evaluation</strong><small>Validates commit against contract terms.</small></div></div><div class="workflow-step"><span class="step-number">2</span><div><strong>Human authorization</strong><small>Authorized operator signs off on milestone delivery.</small></div></div><div class="workflow-step"><span class="step-number">3</span><div><strong>PayPal Payouts</strong><small>Releases funds directly to contributor account.</small></div></div><div style="display:grid;gap:8px;margin-top:13px"><button class="btn btn-secondary" data-action="approve-escrow" type="button" ${!canApprove || e.humanApproved ? "disabled" : ""}>${e.humanApproved ? "Milestone approved" : "Authorize bounty payout"}</button><button class="btn btn-primary" data-action="release-escrow" type="button" ${!e.humanApproved ? "disabled" : ""}>Execute PayPal Payout</button></div></section></aside></div>`;
+
+    const contractCards = contractsList.map((c) => {
+      const stage = Number(c.stage || 1);
+      const isStage1 = stage === 1;
+      const isStage2 = stage === 2;
+      const isStage3 = stage === 3;
+      const isSettled = stage >= 4;
+
+      return `
+        <article class="card approval-card" style="margin-bottom:14px; padding:16px" data-contract-id="${esc(c.id)}">
+          <div class="approval-main">
+            <div class="approval-title">
+              <div class="approval-merchant">
+                <span class="activity-icon ${isSettled ? 'approved' : isStage3 ? 'approved' : isStage2 ? 'review' : 'blocked'}">
+                  ${isSettled ? '✓' : isStage3 ? '💳' : isStage2 ? '👤' : '📦'}
+                </span>
+                <div>
+                  <strong>${esc(c.bountyTitle)}</strong>
+                  <small>Developer: <strong>${esc(c.developer)}</strong> · Contract ID: <code>${esc(c.id)}</code></small>
+                </div>
+              </div>
+              <div class="approval-amount">
+                <strong>${money(c.amount)}</strong>
+                <small>${esc(c.currency || 'USD')} Locked Escrow</small>
+              </div>
+            </div>
+
+            <!-- 3-STAGE PROGRESS STEPPER -->
+            <div class="milestone-track" style="margin:12px 0 10px 0">
+              <div class="milestone-node ${stage >= 1 ? 'active' : ''}">
+                ${stage > 1 ? '✓ ' : ''}1 · Evidence Reference
+              </div>
+              <div class="milestone-node ${stage >= 2 ? 'active' : ''}">
+                ${stage > 2 ? '✓ ' : ''}2 · Human Authorisation
+              </div>
+              <div class="milestone-node ${stage >= 3 ? 'active' : ''}">
+                ${isSettled ? '✓ ' : ''}3 · PayPal Checkout
+              </div>
+            </div>
+
+            <div class="approval-signals">
+              <span class="status-pill ${isSettled ? 'approved' : isStage3 ? 'approved' : isStage2 ? 'review' : 'blocked'}">
+                ${esc(c.stageName || c.payoutStatus || 'Stage 1: Evidence Reference')}
+              </span>
+              <span class="tag">Milestone: ${esc(c.milestone || 'Core Deliverable')}</span>
+              ${c.paypalOrderId ? `<span class="tag" style="background:rgba(0,48,135,0.08); color:#003087">PayPal Order: ${esc(c.paypalOrderId)}</span>` : ''}
+            </div>
+
+            <div class="approval-detail">
+              <div class="approval-detail-top">
+                <span>Acceptance Criteria & Evidence Chain</span>
+                <span class="status-pill ${c.verified ? 'approved' : 'blocked'}">${c.verified ? '✓ Evidence Verified' : 'Awaiting Commit URL'}</span>
+              </div>
+              <p style="margin-bottom:6px"><strong>Criteria:</strong> ${esc(c.criteria)}</p>
+              <div style="background:var(--surface-subtle); padding:8px 10px; border-radius:6px; font-family:var(--font-mono); font-size:11px">
+                🔗 <strong>Evidence Reference:</strong> ${c.evidence ? `<a href="${esc(c.evidence)}" target="_blank" rel="noopener noreferrer" style="color:var(--brand)">${esc(c.evidence)}</a>` : '<em style="color:var(--muted)">No commit reference attached yet</em>'}
+              </div>
+              ${c.reviewer ? `<small style="display:block; margin-top:6px; color:var(--muted)">✓ Signed off by: <strong>${esc(c.reviewer)}</strong> (${esc(c.reviewNotes || 'Approved')})</small>` : ''}
+            </div>
+          </div>
+
+          <div class="approval-actions" style="display:flex; flex-direction:column; gap:8px; align-items:flex-end; justify-content:center">
+            ${isStage1 ? `
+              <button class="btn btn-primary btn-sm" data-action="verify-contract-evidence" data-id="${esc(c.id)}" type="button">
+                Verify Evidence (Stage 1 → 2)
+              </button>
+            ` : isStage2 ? `
+              <button class="btn btn-secondary btn-sm" data-action="authorize-contract-milestone" data-id="${esc(c.id)}" type="button">
+                👤 Human Authorisation (Stage 2 → 3)
+              </button>
+            ` : isStage3 ? `
+              <button class="btn-paypal" data-action="checkout-contract-paypal" data-id="${esc(c.id)}" type="button" style="padding:0 12px; font-size:11px">
+                <span class="pp-badge">Pay</span> PayPal Checkout (${money(c.amount)})
+              </button>
+            ` : `
+              <span class="status-pill approved">✓ Disbursed on PayPal Sandbox</span>
+            `}
+          </div>
+        </article>
+      `;
+    }).join("");
+
+    return `${pageHeader("Developer Bounty Escrow (3-Stage Workflow)", "Deterministic 3-stage milestone release: Stage 1 Evidence Reference → Stage 2 Human Authorisation → Stage 3 PayPal Checkout.", "Milestone escrow and payout governance")}
+      <div class="trust-banner">
+        <span class="trust-icon">${ICONS.shield}</span>
+        <div class="trust-copy">
+          <strong>Smart Escrow 3-Stage Pipeline : Cryptographic Evidence ↔ Human Authorisation ↔ PayPal Checkout</strong>
+          <span>Escrow funds remain securely locked until acceptance evidence is verified and authorized by human reviewer.</span>
+        </div>
+        <span class="sandbox-tag">Escrow Active</span>
+      </div>
+
+      <section class="card" style="margin-bottom:16px">
+        <div class="card-heading">
+          <div>
+            <span class="card-kicker">Live Bounty Contracts (${contractsList.length} Active)</span>
+            <h2 style="margin-top:5px">Active Developer Escrow Ledgers</h2>
+            <p>Each contract progresses through all three deterministic stages before PayPal disbursement.</p>
+          </div>
+          <span class="tag">${contractsList.length} Contracts</span>
+        </div>
+        <div class="contracts-container" style="margin-top:12px">
+          ${contractCards || '<div class="empty-state"><p>Loading live contracts from backend...</p></div>'}
+        </div>
+      </section>
+
+      <div class="workflow-layout">
+        <div class="stack">
+          <section class="card">
+            <div class="card-heading">
+              <div>
+                <span class="card-kicker">Create New Milestone Escrow</span>
+                <h2 style="margin-top:5px">Configure Bounty & Acceptance Gate</h2>
+                <p>Define bounty criteria, funding amount, and GitHub pull request reference.</p>
+              </div>
+              <span class="tag">Smart Escrow Gate</span>
+            </div>
+            <div class="form-grid">
+              <div class="form-field full">
+                <label for="escrow-dev-name">Developer GitHub Handle / Name</label>
+                <input id="escrow-dev-name" type="text" placeholder="e.g. Liam Zhang (@lzhang-eng)">
+              </div>
+              <div class="form-field">
+                <label for="escrow-bounty-title">Bounty Deliverable Title</label>
+                <input id="escrow-bounty-title" type="text" placeholder="e.g. Distributed State Sync Driver">
+              </div>
+              <div class="form-field">
+                <label for="escrow-amount">Bounty Escrow Amount · USD</label>
+                <input id="escrow-amount" type="number" min="0" step="0.01" placeholder="2000.00">
+              </div>
+              <div class="form-field full">
+                <label for="escrow-milestone">Milestone Identifier</label>
+                <input id="escrow-milestone" data-escrow-field="milestone" value="${esc(e.milestone)}" placeholder="e.g. Milestone 1: Core API Delivery">
+              </div>
+              <div class="form-field full">
+                <label for="escrow-criteria">Acceptance Criteria</label>
+                <textarea id="escrow-criteria" data-escrow-field="criteria" placeholder="Define verifiable requirements (e.g. all 42 automated tests passing, zero regression)">${esc(e.criteria)}</textarea>
+              </div>
+              <div class="form-field full">
+                <label for="escrow-evidence">Stage 1: GitHub Commit / Pull-Request Evidence Reference</label>
+                <input id="escrow-evidence" data-escrow-field="evidence" value="${esc(e.evidence)}" placeholder="https://github.com/mandate/core/pull/142">
+              </div>
+            </div>
+            <div style="display:flex; justify-content:flex-end; margin-top:13px">
+              <button class="btn btn-primary" data-action="create-new-escrow-contract" type="button">
+                + Lock Funds in Escrow Contract
+              </button>
+            </div>
+          </section>
+        </div>
+
+        <aside class="stack">
+          <section class="card">
+            <div class="card-heading">
+              <div>
+                <span class="card-kicker">3-Stage Gate Overview</span>
+                <h2 style="margin-top:5px">Custody Protection</h2>
+                <p>Triple verification required before release.</p>
+              </div>
+              <span class="status-pill approved">Guarded</span>
+            </div>
+            <div class="workflow-step">
+              <span class="step-number">1</span>
+              <div>
+                <strong>Stage 1: Evidence Reference</strong>
+                <small>Validates commit hashes, test passing runs, and PR against contract terms.</small>
+              </div>
+            </div>
+            <div class="workflow-step">
+              <span class="step-number">2</span>
+              <div>
+                <strong>Stage 2: Human Authorisation</strong>
+                <small>Lead engineering reviewer audits code quality and provides formal sign-off.</small>
+              </div>
+            </div>
+            <div class="workflow-step">
+              <span class="step-number">3</span>
+              <div>
+                <strong>Stage 3: PayPal Checkout</strong>
+                <small>Disburses bounty funds directly via PayPal Sandbox payment orders.</small>
+              </div>
+            </div>
+          </section>
+        </aside>
+      </div>`;
   }
 
   function renderPrivacy() {
@@ -519,31 +2015,26 @@
     initialState, routes: ROUTES, data: D, ICONS
   };
 
-  // Sync state with backend if available
-  if (window.MANDATE_API && window.MANDATE_API.checkHealth) {
-    window.MANDATE_API.checkHealth().then(async (health) => {
-      if (health.status === "ok") {
-        try {
-          const [mandates, approvals, auditResult, invoices, dashboard] = await Promise.all([
-            window.MANDATE_API.getMandates().catch(() => null),
-            window.MANDATE_API.getApprovals().catch(() => null),
-            window.MANDATE_API.getAuditLog({ limit: 200 }).catch(() => null),
-            window.MANDATE_API.getInvoices().catch(() => null),
-            window.MANDATE_API.getDashboard().catch(() => null),
-          ]);
-          if (Array.isArray(mandates) && mandates.length > 0) {
-            state.mandates = mandates;
-          }
-          if (Array.isArray(approvals) && approvals.length > 0) {
-            state.approvals = approvals;
-          } else if (Array.isArray(state.approvals) && state.approvals.length > 0 && window.MANDATE_API.createApproval) {
-            state.approvals.forEach((appr) => {
-              window.MANDATE_API.createApproval(appr).catch(() => {});
+  // Real-time synchronization with Express backend via SSE stream
+  if (window.MANDATE_API) {
+    if (typeof window.MANDATE_API.subscribe === "function") {
+      window.MANDATE_API.subscribe((type, data) => {
+        let needsRender = false;
+        if (type === "init") {
+          if (Array.isArray(data.mandates) && data.mandates.length > 0) {
+            state.mandates = data.mandates;
+            needsRender = true;
+          } else if (Array.isArray(state.mandates) && state.mandates.length > 0) {
+            state.mandates.forEach((m) => {
+              window.MANDATE_API.createMandate(m).catch(() => {});
             });
           }
-          // Map audit log entries to the activity feed format
-          if (auditResult && Array.isArray(auditResult.entries) && auditResult.entries.length > 0) {
-            const auditActivity = auditResult.entries.map((entry) => ({
+          if (Array.isArray(data.approvals)) {
+            state.approvals = data.approvals;
+            needsRender = true;
+          }
+          if (Array.isArray(data.auditLog) && data.auditLog.length > 0) {
+            state.activity = data.auditLog.map((entry) => ({
               id: entry.id,
               title: `${entry.details?.merchant || entry.action} - ${entry.decision}`,
               merchant: entry.details?.merchant || entry.action,
@@ -552,23 +2043,281 @@
               status: entry.decision === "approved" ? "approved" : entry.decision === "blocked" ? "blocked" : "review",
               decision: entry.reason,
             }));
-            // Merge: server audit entries take precedence, keep locally-added items that aren't in audit
-            const serverIds = new Set(auditActivity.map((a) => a.id));
-            const localOnly = (state.activity || []).filter((a) => !serverIds.has(a.id));
-            state.activity = [...auditActivity, ...localOnly];
+            needsRender = true;
           }
-          if (Array.isArray(invoices) && invoices.length > 0) {
+          if (Array.isArray(data.cfoInvoices) && data.cfoInvoices.length > 0) {
             state.cfo = state.cfo || {};
-            state.cfo.invoices = invoices;
+            state.cfo.invoices = data.cfoInvoices;
+            needsRender = true;
           }
-          if (dashboard && typeof dashboard === "object") {
-            state._dashLatency = dashboard.settlementLatency || "0.00s";
+          if (Array.isArray(data.triageQueue) && data.triageQueue.length > 0) {
+            state.triage = state.triage || {};
+            state.triage.queue = data.triageQueue;
+            needsRender = true;
           }
+          if (Array.isArray(data.inventoryStore) && data.inventoryStore.length > 0) {
+            state.inventory = state.inventory || {};
+            state.inventory.items = data.inventoryStore;
+            if (!state.inventory.sku) {
+              const first = data.inventoryStore[0];
+              state.inventory.sku = first.sku;
+              state.inventory.item = first.item;
+              state.inventory.stock = String(first.stock);
+              state.inventory.threshold = String(first.threshold);
+              state.inventory.supplierA = first.supplierA || "";
+              state.inventory.priceA = String(first.priceA || "");
+              state.inventory.daysA = String(first.daysA || "");
+              state.inventory.supplierB = first.supplierB || "";
+              state.inventory.priceB = String(first.priceB || "");
+              state.inventory.daysB = String(first.daysB || "");
+            }
+            needsRender = true;
+          }
+          if (Array.isArray(data.escrowContracts) && data.escrowContracts.length > 0) {
+            state.escrow = state.escrow || {};
+            state.escrow.contracts = data.escrowContracts;
+            needsRender = true;
+          }
+          if (Array.isArray(data.procurementScans) && data.procurementScans.length > 0) {
+            state.procurement = state.procurement || {};
+            state.procurement.scans = data.procurementScans;
+            needsRender = true;
+          }
+          if (data.fxRates && data.fxRates.rates) {
+            state.cfo = state.cfo || {};
+            state.cfo.liveRates = data.fxRates.rates;
+            state.cfo.rateProvider = data.fxRates.provider;
+            needsRender = true;
+          }
+          if (data.dashboard) {
+            state._dashLatency = data.dashboard.settlementLatency || "0.00s";
+            needsRender = true;
+          }
+        } else if (type === "mandate_created" || type === "mandate_updated") {
+          const idx = state.mandates.findIndex((m) => m.id === data.id);
+          if (idx >= 0) {
+            state.mandates[idx] = data;
+          } else {
+            data._highlight = true;
+            setTimeout(() => { delete data._highlight; render(); }, 3500);
+            state.mandates.unshift(data);
+          }
+          persist();
+          needsRender = true;
+        } else if (type === "mandate_deleted") {
+          state.mandates = state.mandates.filter((m) => m.id !== data.id);
+          persist();
+          needsRender = true;
+        } else if (type === "approval_created" || type === "approval_updated") {
+          const idx = state.approvals.findIndex((a) => a.id === data.id);
+          if (idx >= 0) {
+            state.approvals[idx] = data;
+          } else {
+            state.approvals.unshift(data);
+          }
+          needsRender = true;
+        } else if (type === "audit_entry") {
+          const newAct = {
+            id: data.id,
+            title: `${data.details?.merchant || data.action} - ${data.decision}`,
+            merchant: data.details?.merchant || data.action,
+            amount: Number(data.details?.amount) || 0,
+            agent: data.details?.mandateId || "Policy engine",
+            status: data.decision === "approved" ? "approved" : data.decision === "blocked" ? "blocked" : "review",
+            decision: data.reason,
+          };
+          if (!state.activity.some((a) => a.id === newAct.id)) {
+            state.activity.unshift(newAct);
+            if (state.activity.length > 80) state.activity.pop();
+            needsRender = true;
+          }
+        } else if (type === "invoice_created") {
+          state.cfo = state.cfo || {};
+          state.cfo.invoices = state.cfo.invoices || [];
+          if (!state.cfo.invoices.some((i) => i.id === data.id)) {
+            state.cfo.invoices.unshift(data);
+            needsRender = true;
+          }
+        } else if (type === "domain_updated") {
+          if (data && data.domain) {
+            // Update domain label in topbar if visible
+            const domainLabel = document.getElementById("topbar-domain-label");
+            if (domainLabel) domainLabel.textContent = data.domain;
+            try { localStorage.setItem("mandate_custom_domain", data.domain); } catch (_) {}
+          }
+        } else if (type === "dashboard") {
+          if (data && data.settlementLatency) {
+            state._dashLatency = data.settlementLatency;
+          }
+          needsRender = true;
+        } else if (type === "triage_created") {
+          state.triage = state.triage || { queue: [] };
+          state.triage.queue = state.triage.queue || [];
+          if (!state.triage.queue.some((t) => t.id === data.id)) {
+            state.triage.queue.unshift(data);
+          }
+          needsRender = true;
+        } else if (type === "triage_updated") {
+          state.triage = state.triage || { queue: [] };
+          state.triage.queue = state.triage.queue || [];
+          const idx = state.triage.queue.findIndex((t) => t.id === data.id);
+          if (idx >= 0) {
+            state.triage.queue[idx] = data;
+          } else {
+            state.triage.queue.unshift(data);
+          }
+          needsRender = true;
+        } else if (type === "triage_deleted") {
+          state.triage = state.triage || { queue: [] };
+          state.triage.queue = (state.triage.queue || []).filter((t) => t.id !== data.id);
+          needsRender = true;
+        } else if (type === "vitals_tick") {
+          state.triage = state.triage || {};
+          state.triage.liveVitals = data;
+          const hrEl = document.getElementById("live-vitals-hr");
+          if (hrEl) hrEl.textContent = `${data.hr} bpm`;
+          const bpEl = document.getElementById("live-vitals-bp");
+          if (bpEl) bpEl.textContent = data.bp;
+          const spo2El = document.getElementById("live-vitals-spo2");
+          if (spo2El) spo2El.textContent = `${data.spo2}%`;
+          const tempEl = document.getElementById("live-vitals-temp");
+          if (tempEl) tempEl.textContent = `${data.temp}°F`;
+        } else if (type === "paypal_status") {
+          const badge = document.getElementById("paypal-status-badge");
+          if (badge) {
+            if (data.connected) {
+              badge.innerHTML = `<span class="status-dot" style="background:#003087; box-shadow:0 0 0 3px #00308740; animation: pulse 2s infinite"></span>PayPal ✓ Connected`;
+              badge.style.color = "#003087";
+            } else {
+              badge.innerHTML = `<span class="status-dot" style="background:#f59e0b"></span>PayPal Simulated`;
+              badge.style.color = "";
+            }
+          }
+        } else if (type === "inventory_updated") {
+          state.inventory = state.inventory || {};
+          state.inventory.items = state.inventory.items || [];
+          const idx = state.inventory.items.findIndex((it) => it.id === data.id || it.sku === data.sku);
+          if (idx >= 0) {
+            state.inventory.items[idx] = data;
+          } else {
+            state.inventory.items.unshift(data);
+          }
+          if (state.inventory.sku === data.sku) {
+            state.inventory.stock = String(data.stock);
+          }
+          needsRender = true;
+        } else if (type === "escrow_updated") {
+          state.escrow = state.escrow || {};
+          state.escrow.contracts = state.escrow.contracts || [];
+          const idx = state.escrow.contracts.findIndex((c) => c.id === data.id);
+          if (idx >= 0) {
+            state.escrow.contracts[idx] = data;
+          } else {
+            state.escrow.contracts.unshift(data);
+          }
+          needsRender = true;
+        } else if (type === "vault_updated") {
+          if (data && (data.defaultVault !== undefined || data.currentVault !== undefined)) {
+            state.defaultVault = data.defaultVault || 50000;
+            state.vault = data.currentVault !== undefined ? data.currentVault : state.defaultVault;
+            needsRender = true;
+          }
+        } else if (type === "user_authenticated") {
+          if (data && data.user) {
+            state.currentUser = data.user;
+            needsRender = true;
+          }
+        } else if (type === "procurement_scanned") {
+          state.procurement = state.procurement || {};
+          state.procurement.scans = state.procurement.scans || [];
+          if (!state.procurement.scans.some((sc) => sc.id === data.id)) {
+            state.procurement.scans.unshift(data);
+          }
+          state.procurement.lastScan = data;
+          needsRender = true;
+        } else if (type === "reset") {
+          state = initialState();
+          persist();
+          needsRender = true;
+        }
+
+        if (needsRender) {
           syncChrome();
           render();
-        } catch (_) {}
-      }
-    }).catch(() => {});
+        }
+      });
+    }
+
+    // Initial fallback check & live data synchronization across all tabs
+    if (typeof window.MANDATE_API.checkHealth === "function") {
+      window.MANDATE_API.checkHealth().then(async (health) => {
+        if (health.status === "ok") {
+          if (typeof window.MANDATE_API.connectRealtime === "function") {
+            window.MANDATE_API.connectRealtime();
+          }
+          try {
+            const [m, a, d, t, inv, esc, sc, rates, vaultData, meData] = await Promise.all([
+              typeof window.MANDATE_API.getMandates === "function" ? window.MANDATE_API.getMandates().catch(() => null) : null,
+              typeof window.MANDATE_API.getApprovals === "function" ? window.MANDATE_API.getApprovals().catch(() => null) : null,
+              typeof window.MANDATE_API.getDashboard === "function" ? window.MANDATE_API.getDashboard().catch(() => null) : null,
+              typeof window.MANDATE_API.getTriageQueue === "function" ? window.MANDATE_API.getTriageQueue().catch(() => null) : null,
+              typeof window.MANDATE_API.getInventory === "function" ? window.MANDATE_API.getInventory().catch(() => null) : null,
+              typeof window.MANDATE_API.getEscrow === "function" ? window.MANDATE_API.getEscrow().catch(() => null) : null,
+              typeof window.MANDATE_API.getProcurementScans === "function" ? window.MANDATE_API.getProcurementScans().catch(() => null) : null,
+              typeof window.MANDATE_API.getRates === "function" ? window.MANDATE_API.getRates(state.cfo?.sourceCurrency || "USD").catch(() => null) : null,
+              typeof window.MANDATE_API.getVault === "function" ? window.MANDATE_API.getVault().catch(() => null) : null,
+              typeof window.MANDATE_API.getAuthMe === "function" ? window.MANDATE_API.getAuthMe().catch(() => null) : null,
+            ]);
+            if (Array.isArray(m) && m.length > 0) state.mandates = m;
+            if (Array.isArray(a)) state.approvals = a;
+            if (t && Array.isArray(t.queue)) {
+              state.triage = state.triage || {};
+              state.triage.queue = t.queue;
+            }
+            if (inv && Array.isArray(inv.items)) {
+              state.inventory = state.inventory || {};
+              state.inventory.items = inv.items;
+              if (!state.inventory.sku && inv.items.length > 0) {
+                const first = inv.items[0];
+                state.inventory.sku = first.sku;
+                state.inventory.item = first.item;
+                state.inventory.stock = String(first.stock);
+                state.inventory.threshold = String(first.threshold);
+                state.inventory.supplierA = first.supplierA || "";
+                state.inventory.priceA = String(first.priceA || "");
+                state.inventory.daysA = String(first.daysA || "");
+                state.inventory.supplierB = first.supplierB || "";
+                state.inventory.priceB = String(first.priceB || "");
+                state.inventory.daysB = String(first.daysB || "");
+              }
+            }
+            if (esc && Array.isArray(esc.contracts)) {
+              state.escrow = state.escrow || {};
+              state.escrow.contracts = esc.contracts;
+            }
+            if (Array.isArray(sc) && sc.length > 0) {
+              state.procurement = state.procurement || {};
+              state.procurement.scans = sc;
+            }
+            if (rates && rates.rates) {
+              state.cfo = state.cfo || {};
+              state.cfo.liveRates = rates.rates;
+              state.cfo.rateProvider = rates.provider;
+            }
+            if (vaultData && vaultData.defaultVault !== undefined) {
+              state.defaultVault = vaultData.defaultVault;
+              state.vault = vaultData.currentVault;
+            }
+            if (meData && meData.user) {
+              state.currentUser = meData.user;
+            }
+            if (d && d.settlementLatency) state._dashLatency = d.settlementLatency;
+            syncChrome();
+            render();
+          } catch (_) {}
+        }
+      }).catch(() => {});
+    }
   }
 
   render();
