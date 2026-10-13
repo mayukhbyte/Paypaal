@@ -1,129 +1,123 @@
-# Mandate | Autonomous Agent Finance Command Center
+# Mandate | Autonomous Agent Finance & Treasury Command Center
 
 [![Node.js](https://img.shields.io/badge/Node.js-v18%2B-green.svg)](https://nodejs.org/)
 [![Express](https://img.shields.io/badge/Express-5.x-blue.svg)](https://expressjs.com/)
 [![PayPal](https://img.shields.io/badge/PayPal-Sandbox%20Live-003087.svg)](https://developer.paypal.com/)
-[![Real-Time](https://img.shields.io/badge/Backend-100%25%20Real--Time%20Telemetry-purple.svg)]()
-[![License](https://img.shields.io/badge/License-MIT-black.svg)]()
+[![Real-Time Market](https://img.shields.io/badge/Market-Live%20Google%20FX%20%26%20Yahoo%20Finance-00c853.svg)]()
+[![Bots](https://img.shields.io/badge/Bots-Telegram%20%26%20WhatsApp%20Rails-25D366.svg)]()
+[![License](https://img.shields.io/badge/License-MIT-black.svg)](LICENSE)
 
-> Production console for scoped autonomous agent finance mandates, real-time policy guardrails, human-in-the-loop approvals, conversational AI CFO financial operations, predictive dispute resolution, and connected PayPal Sandbox settlement rails.
-
----
-
-## 🌟 Key Architecture & Real-Time Features
-
-### 1. Zero Hardcoded Mock Data & Dynamic Operating Vault
-- **Clean Slate On Startup**: No hardcoded mock approvals, mock users, or pre-seeded balances.
-- **Dynamic Vault Capital Configuration via Auth**: Operators enter their desired operating capital (e.g., `$50,000`, `$85,000`, or `$125,000`) directly in the Authentication / OAuth dialog. The workspace operates according to the user's exact treasury requirement.
-- **Universal Email & OAuth 2.0 Identity**: Fast single sign-on with Google, PayPal, and GitHub OAuth, plus valid email/password registration with persistence in the backend user store.
+> **Mandate** is a production-grade command center for scoped autonomous agent finance, real-time policy guardrails, human-in-the-loop approvals, conversational AI CFO operations with live Google currency parity, multi-rail invoice settlement (PayPal, WhatsApp Bot, Telegram Bot), live stock inventory with multi-factor AI trading signals, and a high-tech AI neural dispute resolver under PayPal Seller Protection.
 
 ---
 
-### 2. Human-in-the-Loop Approvals Queue
-The Approvals Queue starts clean (`[]`) and only populates when real operational sections require human authorization:
-- **Procurement Dual-Scan Discrepancies**: When automated comparison between supplier invoices and purchase orders flags line-item, quantity, or total price variances, it automatically escalates an approval item (`appr-proc-...`) requiring human sign-off before payout release.
-- **Autonomous Inventory Agent Reorder Gate**: When sensor telemetry detects that stock falls at or below threshold (`stock <= threshold`), the purchase gate routes to Approvals (`appr-inv-...`) for manual human review.
-- **Developer Bounty Escrow (Stage 2 Human Authorisation)**: When GitHub PR / commit evidence is verified in Stage 1, it advances to Stage 2 Human Authorisation, creating an approval item (`appr-escrow-...`) that must be approved before unlocking Stage 3 PayPal Checkout.
-- **Spend Firewall Policy Breaches**: High-risk or budget-exceeding transactions route to the queue for manual intervention.
-- **Module Synchronization**: Approving or denying items in the Approvals Queue instantly synchronizes back to the originating module (authorizing inventory restock, releasing procurement payout, or unlocking developer escrow release).
+## 🌟 Key Architecture & Real-Time Modules
+
+### 1. Scoped Autonomous Agent Mandates & Policy Guardrails
+- **Deterministic Spend Limits**: Enforce strict per-transaction and monthly cumulative ceilings across autonomous agent workflows.
+- **Merchant & Category Whitelists**: Restrict agent spend to approved vendors (e.g., AWS, GitHub, Cloudflare, OpenAI) while blocking restricted categories.
+- **Spend Firewall & Guardrail Evaluation**: Automatic evaluation of transactions against policy rules (`POST /api/guardrails/evaluate`) before settlement release.
 
 ---
 
-### 3. Freelancer CFO: Natural Language Financial Intelligence Engine
-A conversational treasury assistant powered by real-time financial NLP:
-- **Real-Time Client Invoice Generation**: Prompts such as:
-  - *"Invoice Acme Creative for 3,500 EUR"*
-  - *"Bill Spotify $4,800 USD for backend API integration"*
-  - *"Charge Studio Alpha 2500 GBP"*
-  automatically parse client names, amounts, and currencies, generate formal invoice records in backend receivables (`cfoInvoices`), and update the **Active Receivables** table in real time.
-- **Live Google Finance & Market Parity Exchange**: Prompts such as:
-  - *"What is the market parity between 5,000 EUR and USD?"*
-  - *"Convert 2,500 GBP to USD at market rate"*
-  query live Google Finance / Interbank parity rates, update the **Live Currency Converter** card, and calculate exact exchange amounts with zero retail bank markup.
-- **Tax Withholding & Reserve Calculations**: Prompts such as *"How much tax should I save if I earned $40,000?"* compute self-employment withholding, required vault reserves, net take-home, and quarterly payment dates.
-- **Profit Margin & Overhead Analysis**: Prompts analyzing revenue and expenses (e.g. *"Revenue $25,000, expenses $6,500"*) calculate net profit, operating leverage, and margin percentages.
-- **Value-Based Pricing & Rate Calculator**: Computes target billable hours and recommends hourly, daily, and monthly retainer rates based on desired net compensation.
-- **Payment Follow-Ups & Chasing**: Analyzes outstanding invoices and drafts customized, professional payment reminder notices with PayPal settlement links.
-- **Convenient Quick-Prompt Shortcuts**: One-click prompt chips allow rapid execution with a single click or by pressing **Enter**.
+### 2. Real-Time Hardware Stocks & Multi-Factor AI Stock Advisor
+- **100% Zero Mock Data**: Every stock quote (price, intraday high/low, volume, 5-minute price series) is fetched directly from live Yahoo Finance market chart feeds.
+- **Custom Stock Addition & Tracking**: Operators can register any custom stock ticker (e.g. `AAPL`, `MSFT`, `TSLA`, `GOOGL`, `NVDA`) with custom target prices and track live quotes immediately.
+- **High-Definition Interactive Chart**: Real-time canvas rendering of 5-minute intraday price curves with dynamic gradient fills and session high/low markers.
+- **Multi-Factor AI Stock Advisor Engine**:
+  - Eliminates generic static signals. Evaluates 10 nuanced, multi-factor rules based on **RSI (Relative Strength Index)**, **intraday SMA**, **day change percentage**, and **unrealized P&L bands**.
+  - Generates actionable, differentiated recommendations: `BUY DIP / ACCUMULATE`, `WATCH & ACCUMULATE (ACCUMULATE ON WEAKNESS)`, `TRIM / TAKE PROFIT`, `STOP-LOSS CAUTION`, or `ACCUMULATE / RIDE TREND`.
+- **Instantaneous Vault Balance Synchronization**:
+  - **Buy Stock**: Deducts capital directly from the operational vault balance in real time.
+  - **Sell Stock**: Liquidates shares and immediately deposits net proceeds back into the vault balance with live SSE broadcast.
 
 ---
 
-### 4. Autonomous Inventory Agent with Connected PayPal Checkout
-- **Dynamic Warehouse Telemetry (Not Hardcoded)**:
-  - Add custom hardware items via `POST /api/inventory/items` or the **"+ Add Monitored Hardware SKU"** modal.
-  - Multi-supplier quote comparison (lowest price and shortest fulfillment lead time).
-- **Live ESP32 Sensor Telemetry Depletion**:
-  - Simulate real-time sensor consumption via `POST /api/inventory/telemetry` or the **"-1 Unit (Sensor)"** button, observing live stock depletion that triggers the reorder gate dynamically.
-- **Connected PayPal Sandbox Checkout**:
-  - Restock purchase execution routes directly through the `@paypal/paypal-server-sdk` Orders API (`POST /api/inventory/checkout`).
-  - Restocks warehouse units (+5 units), logs transaction receipts, and automatically deducts the payment from `vaultConfig.currentVault` in real time.
+### 3. Freelancer CFO: Live Google Currency Parity & Natural Language AI Assistant
+- **Live Google Finance & Interbank Currency Parity Engine**:
+  - Connects to real-time market feeds (`POST /api/fx/convert` & `GET /api/rates`) for **EUR, USD, GBP, INR, JPY, CAD, AUD, CHF, SGD**.
+  - Accurate market rates with zero mock data and zero bank markup (e.g., `1 EUR = 1.1171 USD`, `1 USD = 95.91 INR`).
+- **Conversational AI Treasury Engine (`/api/ai/cfo-chat`)**:
+  - **Real-Time Client Invoicing**: Prompts like *"Invoice Studio Alpha for 4500 EUR"* or *"Bill Spotify 3200 GBP"* automatically parse client, amount, and currency, generate official invoice records, and update the active receivables table in real time.
+  - **Live Market Parity Conversions**: Prompts like *"Market parity 2000 EUR to USD"* or *"Convert 1500 USD to INR"* calculate exact conversions using live Google Finance parity rates and dynamically update the interactive converter card.
+  - **Late Payment Follow-Ups**: Prompts like *"Draft payment reminder for late receivables"* inspect unpaid invoices and generate executive payment reminder notices with PayPal payment links.
+  - **Tax Reserves & Runway Intelligence**: Computes self-employment tax withholding (28%) and calculates treasury runway based on burn rate.
+- **Multi-Rail Invoice Settlement**:
+  - Outstanding invoices can be settled directly in real time via:
+    - 💳 **PayPal Sandbox Rail**
+    - 🟢 **WhatsApp Bot Payment Webhook**
+    - ✈️ **Telegram Bot Settlement Rail**
+  - Instant settlement marks invoices as paid, logs cryptographic transaction receipts, credits the operating vault balance, and dispatches automated bot settlement confirmations.
 
 ---
 
-### 5. Dispute Resolver with Real-Time Predictive Case Outlook & Estimated Recovery
-- **Real-Time Predictive Win Rate**:
-  - Evaluates case evidence dynamically on every keystroke:
-    - **Baseline (Awaiting records)**: `20%`
-    - **Confirmed Transaction Reference ID**: `+20%` ($40\%$ total)
-    - **Carrier Shipping Evidence & POD (FedEx, UPS, DHL, USPS)**: `+35%` ($75\%–85\%$ total, **Strong Protection Tier 1**)
-    - **Rebuttal Narrative Package Compiled**: `+20%` ($90\%$ total)
-    - **Transmitted to PayPal Resolution Center**: `+10%` ($98\%$ total)
-- **Live Estimated Dollar Recovery**:
-  $$\text{Estimated Recovery} = \frac{\text{Disputed Claim Amount} \times \text{Win Rate \%}}{100}$$
-  Scales dynamically with the editable **Disputed Claim Amount ($ USD)** input field.
-- **Interactive Visual Feedback**:
-  - Animated visual progress bar that updates its fill and color dynamically.
-  - Live 4-point verification checklist lighting up green as evidence is assembled.
-  - Formal Merchant Rebuttal package transmission to the PayPal Resolution Center with generated submission ID (`PPDISP-...`).
+### 4. AI Neural Dispute Arbitrator & Statutory Seller Protection Console
+- **High-Tech Cyber/Fintech HUD**:
+  - Dark glassmorphism command console with animated scanlines, status indicator LEDs, and live endpoint latency monitors:
+    - `POST /api/ai/dispute-outlook` · `24ms · ACTIVE`
+    - `POST /api/ai/draft-dispute` · `NEURAL SYNTHESIZER READY`
+    - `POST /api/ai/submit-dispute` · `PAYPAL RESOLUTION RAIL SYNCED`
+- **1-Click Evidence Preset Ingestion**:
+  - Instant scenario buttons (`⚡ FedEx Express POD`, `⚡ UPS Signature POD`, `⚡ DHL Express Geostamp`) automatically inject carrier tracking numbers, signature scans, and GPS stamps.
+- **Real-Time Predictive Win Rate & Capital Recovery**:
+  - Dynamically calculates seller win probability (up to **98%**) and expected dollar recovery against editable disputed claim amounts:
+    $$\text{Estimated Recovery} = \frac{\text{Claim Amount} \times \text{Win Rate \%}}{100}$$
+- **Statutory Legal Rebuttal Synthesizer**:
+  - Synthesizes comprehensive legal merchant defense packages invoking **PayPal Seller Protection Policy (Section 11)** with verified carrier proof of delivery (POD) records.
+  - Direct API transmission to the PayPal Dispute Resolution Center with official submission receipts (`DISP-...`) and PayPal Case IDs (`PP-D-...`).
+
+---
+
+### 5. Multi-Channel Bot Rails: Telegram & WhatsApp
+- **Telegram Bot (`bots/telegram-bot.js`)**: Real-time command interface supporting `/mandates`, `/balance`, `/stocks`, and `/pay` with inline keyboards and webhook notifications.
+- **WhatsApp Bot (`bots/whatsapp-bot.js`)**: Interactive WhatsApp Business messaging rail for remote executive approvals, emergency spending alerts, and invoice payment confirmations.
+- **Cross-Module Telemetry**: Bot payments record verified transactions in the central audit ledger and broadcast live telemetry to the dashboard via SSE.
 
 ---
 
 ### 6. Developer Bounty Escrow (3-Stage Workflow)
-- **Stage 1 (Evidence Reference)**: Verify GitHub Pull Request / Commit hash against contract terms.
-- **Stage 2 (Human Authorisation)**: Escalates to Approvals Queue for manual sign-off before payout unlock.
-- **Stage 3 (PayPal Checkout Release)**: Executes cryptographic PayPal Payout to developer's verified wallet.
+- **Stage 1 (Evidence Ingestion)**: Verification of GitHub Pull Requests, commit hashes, or milestone deliverables against smart contract terms.
+- **Stage 2 (Human Authorisation Gate)**: Automatic escalation to the Human Approvals Queue before unlocking checkout.
+- **Stage 3 (PayPal Checkout Release)**: Direct release to the developer's verified PayPal wallet with automatic deduction from escrow reserve capital.
 
 ---
 
-### 7. Clinical Triage & Medical Billing
-- Sensor vitals telemetry stream (`vitals_tick` every 5s).
-- Offline-capable severity triaging (Critical, Urgent, Routine).
-- Automated copay and insurance claim dispatch with PayPal Sandbox invoicing.
-
----
-
-### 8. FairShare Context-Aware Expense Splitting
-- Natural-language split adjustments (e.g. *"Alice didn't drink alcohol, Charlie covered the car deposit"*).
-- Instant calculation of owed balances and individual PayPal payment requests.
+### 7. Dual-Scan Procurement & Autonomous Inventory Depletion
+- **Dual-Document Matcher**: Compares supplier invoices against purchase orders to detect line-item variances, quantity mismatches, and price discrepancies.
+- **ESP32 Sensor Telemetry**: Simulates live hardware inventory depletion that automatically triggers supplier reorders and PayPal restock purchases when stock falls below threshold.
 
 ---
 
 ## 🛠️ Technology Stack
 
-| Layer | Technology |
+| Layer | Technologies |
 |---|---|
-| **Backend** | Node.js, Express 5, `@paypal/paypal-server-sdk`, CORS, Dotenv |
-| **Frontend** | Vanilla JavaScript (ES6+), Semantic HTML5, Zero heavy frameworks |
-| **Styling** | Vanilla CSS3 Design System with CSS Tokens, Dark/Light/Forest themes |
-| **Real-Time** | Server-Sent Events (SSE) `/api/events` & WebSocket telemetry broadcast |
-| **Payments** | PayPal Sandbox & Live Checkout Orders API, Vault reserve ledger |
-| **Persistence** | In-Memory backend store with `localStorage` client synchronization |
+| **Backend Core** | Node.js (ES Modules / CommonJS), Express 5, CORS, Dotenv |
+| **Payment Rails** | `@paypal/paypal-server-sdk`, PayPal Orders API v2, Payouts API |
+| **Market Data** | Yahoo Finance Real-Time Chart API, Open Exchange Rates / Google Parity API |
+| **Bot Integrations** | Node Telegram Bot API, WhatsApp Cloud API / Webhook Engine |
+| **Real-Time Transport** | Server-Sent Events (SSE) `/api/events`, bidirectional state syncing |
+| **Frontend Architecture** | Vanilla JavaScript (ES6+), Semantic HTML5, Zero heavy client dependencies |
+| **Styling & HUD** | Vanilla CSS3 Design System, Cyberpunk Glassmorphism HUD, Dark/Light themes |
 
 ---
 
 ## 📂 Project Structure
 
 ```
-├── server.js           # Express server, PayPal SDK wiring, REST API, & SSE broadcast
-├── api-client.js       # Frontend REST client with error recovery & retry logic
-├── app.js              # View renderers for all 10 domain consoles & navigation
-├── interactions.js     # Real-time event handlers, keystroke listeners, dialog managers
-├── data.js             # Initial state tokens, design concepts, and baseline schema
-├── backend.html        # Interactive API Developer Console & Live Endpoint Tester
-├── index.html          # Main application shell with theme toggles & topbar
-├── styles.css          # Fintech design system (Light, Dark, Forest themes)
-├── package.json        # Node dependencies & start scripts
-└── .env.example        # Environment variable template for PayPal credentials
+├── server.js               # Express API, live FX engine, stock market quotes, PayPal SDK
+├── api-client.js           # Frontend REST client with error recovery & retry logic
+├── app.js                  # View renderers for all 10 domain consoles & navigation
+├── interactions.js         # Real-time event handlers, keystroke listeners, dialog managers
+├── styles.css              # Design system, high-tech HUD cards, theme tokens
+├── backend.html            # Interactive API Developer Console & Live Endpoint Tester
+├── index.html              # Main application shell with theme toggles & topbar
+├── bots/
+│   ├── telegram-bot.js     # Telegram Bot settlement rail and command listeners
+│   ├── whatsapp-bot.js     # WhatsApp Bot webhook engine and notification dispatcher
+│   └── payment-core.js     # Shared bot payment routing and PayPal bridging
+├── package.json            # Node dependencies and execution scripts
+└── .env                    # Environment configuration (PayPal, Telegram, Port)
 ```
 
 ---
@@ -144,53 +138,60 @@ cd Paypaal
 npm install
 ```
 
-### 3. Configure PayPal Sandbox Credentials (Optional)
-Create a `.env` file in the root directory (or copy `.env.example`):
+### 3. Environment Configuration
+Create or configure your `.env` file in the root directory:
 ```env
-PAYPAL_CLIENT_ID=your_sandbox_client_id_here
-PAYPAL_CLIENT_SECRET=your_sandbox_client_secret_here
-PAYPAL_ENVIRONMENT=sandbox
 PORT=3000
-```
-*(If no credentials are provided, the console operates in high-fidelity simulated sandbox mode with realistic transaction order IDs).*
+PAYPAL_CLIENT_ID=your_paypal_sandbox_client_id
+PAYPAL_CLIENT_SECRET=your_paypal_sandbox_client_secret
+PAYPAL_ENVIRONMENT=sandbox
 
-### 4. Run the Application
+# Optional Bot Credentials
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token
+TELEGRAM_BOT_USERNAME=MandateFinanceBot
+WHATSAPP_TOKEN=your_whatsapp_cloud_api_token
+```
+*(If PayPal credentials are not provided, the application runs seamlessly in high-fidelity simulated sandbox mode).*
+
+### 4. Running the Application
 ```bash
 # Start server
 npm start
 
-# Or with nodemon for active development
+# Or run with nodemon for active development
 npm run dev
 ```
 Open **[http://localhost:3000](http://localhost:3000)** in your browser.
 
 ---
 
-## 🔌 API Reference Highlights
+## 🔌 Real-Time REST & SSE API Reference
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/api/auth/login` | `POST` | User authentication & custom vault capital registration |
-| `/api/auth/me` | `GET` | Returns active user session & profile |
+| `/api/rates` | `GET` | Retrieve real-time Google Finance & interbank currency parity rates |
+| `/api/fx/convert` | `POST` | Convert cross-currency amounts using live Google parity quotes |
+| `/api/ai/cfo-chat` | `POST` | Natural language CFO prompts (invoice creation, parity, reminders) |
+| `/api/cfo/invoices` | `GET`, `POST` | Retrieve active receivables or create new client invoice |
+| `/api/cfo/invoices/:id/pay` | `POST` | Settle invoice via PayPal Sandbox, WhatsApp Bot, or Telegram Bot |
+| `/api/inventory/stocks` | `GET` | Retrieve live stock market telemetry from Yahoo Finance |
+| `/api/inventory/stocks` | `POST` | Add custom stock ticker for live tracking and chart rendering |
+| `/api/inventory/stocks/:ticker/ai-suggestion` | `GET` | Multi-factor AI trading recommendations (RSI, SMA, P&L bands) |
+| `/api/inventory/stocks/:ticker/buy` | `POST` | Purchase shares and deduct cost basis from operational vault |
+| `/api/inventory/stocks/:ticker/sell` | `POST` | Liquidate shares and deposit proceeds back into vault |
+| `/api/ai/dispute-outlook` | `POST` | Calculate real-time win probability & expected dollar recovery |
+| `/api/ai/draft-dispute` | `POST` | Synthesize statutory merchant legal rebuttal (Seller Protection Sec. 11) |
+| `/api/ai/submit-dispute` | `POST` | Transmit rebuttal package to PayPal Dispute Resolution Center rail |
 | `/api/vault` | `GET`, `POST` | Retrieve or adjust operating treasury vault capital |
 | `/api/approvals` | `GET` | Retrieve pending human review approvals queue |
 | `/api/approvals/:id/approve` | `POST` | Manually approve pending review item & sync originating module |
-| `/api/ai/cfo-chat` | `POST` | Natural language CFO prompts (invoices, market parity, tax, pricing) |
-| `/api/cfo/invoices` | `GET`, `POST` | Retrieve active receivables or create new client invoice |
-| `/api/inventory` | `GET` | Retrieve active hardware stock telemetry & supplier quotes |
-| `/api/inventory/items` | `POST` | Register dynamic hardware SKU into warehouse ledger |
-| `/api/inventory/telemetry` | `POST` | Simulate real-time ESP32 sensor stock depletion |
-| `/api/inventory/checkout` | `POST` | Execute PayPal Sandbox restock order & deduct vault balance |
-| `/api/ai/dispute-outlook` | `POST` | Calculate real-time win probability & expected dollar recovery |
-| `/api/ai/draft-dispute` | `POST` | Compile automated merchant narrative rebuttal package |
-| `/api/ai/submit-dispute` | `POST` | Transmit rebuttal package to PayPal Dispute Resolution Center |
 | `/api/escrow` | `GET`, `POST` | Retrieve escrow contracts or fund a new milestone contract |
-| `/api/escrow/:id/evidence` | `POST` | Submit GitHub PR evidence reference (advances to Stage 2 Human Review) |
+| `/api/escrow/:id/evidence` | `POST` | Submit milestone evidence (advances to Stage 2 Human Review) |
 | `/api/escrow/:id/checkout` | `POST` | Stage 3 PayPal Checkout escrow payout release |
 | `/api/procurement/scan` | `POST` | Dual-document invoice vs purchase order comparison scanner |
-| `/api/events` | `GET` | Server-Sent Events (SSE) real-time event stream |
+| `/api/events` | `GET` | Server-Sent Events (SSE) real-time event telemetry stream |
 
 ---
 
 ## 📄 License
-MIT License. Open-source and built for pair-programming autonomous agent financial systems.
+This project is licensed under the **MIT License**. Open-source and built for autonomous agent financial operations.

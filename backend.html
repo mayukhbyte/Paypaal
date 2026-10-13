@@ -1,4 +1,5 @@
 <!doctype html>
+<!-- @src-type: component -->
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -1114,6 +1115,9 @@
     async function loadServerData() {
       try {
         // Health
+        if (document.getElementById('vital-host')) {
+          document.getElementById('vital-host').textContent = window.location.host || 'Vercel Serverless';
+        }
         const health = await fetch('/api/health').then(r => r.json());
         if (health.paypalConnected) {
           document.getElementById('vital-paypal').textContent = 'Sandbox Live';

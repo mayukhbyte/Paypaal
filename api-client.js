@@ -1,3 +1,4 @@
+// @src-type: library
 /**
  * Mandate | API Client with Real-Time Server-Sent Events (SSE)
  * ============================================================
@@ -135,6 +136,12 @@
         "vault_updated",
         "user_authenticated",
         "reset",
+        // Real-time settlement pipeline events
+        "settlement_stage",
+        "settlement_complete",
+        "settlement_metric",
+        "bot_message",
+        "inventory_stocks_tick",
       ];
 
       eventTypes.forEach((type) => {
@@ -209,6 +216,13 @@
     return request(`/api/approvals/${id}/deny`, {
       method: "POST",
       body: payload ? JSON.stringify(payload) : undefined,
+    });
+  }
+
+  async function payApproval(id, method = "paypal") {
+    return request(`/api/approvals/${id}/pay`, {
+      method: "POST",
+      body: JSON.stringify({ method }),
     });
   }
 
@@ -345,6 +359,7 @@
     approvePayment,
     denyPayment,
     undoDecision,
+    payApproval,
     createPayPalOrder,
     capturePayPalOrder,
     calculateFairShare,
@@ -356,6 +371,14 @@
     procurementPay,
     draftDispute,
     submitDispute,
+    calculateDisputeOutlook,
+    cfoChat,
+    async payCfoInvoice(id, method = 'paypal', invoiceData = {}) {
+      return request(`/api/cfo/invoices/${encodeURIComponent(id)}/pay`, {
+        method: 'POST',
+        body: JSON.stringify({ method, ...invoiceData }),
+      });
+    },
     // ---------- Clinical Triage & Billing ----------
     async getTriageQueue() {
       return request("/api/triage");
@@ -372,9 +395,10 @@
     async invoiceTriage(id) {
       return request(`/api/triage/${id}/invoice`, { method: "POST" });
     },
-    async payTriage(id) {
-      return request(`/api/triage/${id}/pay`, { method: "POST" });
+    async payTriage(id, method = 'paypal') {
+      return request(`/api/triage/${id}/pay`, { method: 'POST', body: JSON.stringify({ method }) });
     },
+
     async deleteTriage(id) {
       return request(`/api/triage/${id}`, { method: "DELETE" });
     },
@@ -418,6 +442,33 @@
         body: JSON.stringify({ sku, delta }),
       });
     },
+    async getHardwareStocks() {
+      return request("/api/inventory/stocks");
+    },
+    async getStockChart(ticker) {
+      return request(`/api/inventory/stocks/${encodeURIComponent(ticker)}/chart`);
+    },
+    async buyHardwareStock(ticker, units = 1) {
+      return request("/api/inventory/stocks/buy", {
+        method: "POST",
+        body: JSON.stringify({ ticker, units }),
+      });
+    },
+    async sellHardwareStock(ticker, units = 1) {
+      return request("/api/inventory/stocks/sell", {
+        method: "POST",
+        body: JSON.stringify({ ticker, units }),
+      });
+    },
+    async addHardwareStock(data) {
+      return request("/api/inventory/stocks/add", {
+        method: "POST",
+        body: JSON.stringify(data),
+      });
+    },
+    async getStockAISuggestion(ticker) {
+      return request(`/api/inventory/stocks/${encodeURIComponent(ticker)}/ai-suggestion`);
+    },
 
     // ---------- Developer Escrow (3-Stage Workflow) ----------
     async getEscrow() {
@@ -441,8 +492,8 @@
         body: JSON.stringify({ reviewer, reviewNotes }),
       });
     },
-    async checkoutEscrow(id) {
-      return request(`/api/escrow/${id}/checkout`, { method: "POST" });
+    async checkoutEscrow(id, payMethod = "paypal") {
+      return request(`/api/escrow/${id}/checkout`, { method: "POST", body: JSON.stringify({ method: payMethod }) });
     },
 
     // ---------- Procurement Dual-Document Anomaly Scanner ----------
@@ -501,6 +552,26 @@
       });
     },
 
+    // ---------- Real-Time Settlement & Bots ----------
+    async getSettlementTimeSeries() {
+      return request("/api/settlement/timeseries");
+    },
+    async getBotsStatus() {
+      return request("/api/bots/status");
+    },
+    async payViaBot(params) {
+      return request("/api/bot-pay", {
+        method: "POST",
+        body: JSON.stringify(params),
+      });
+    },
+    async sendBotCommand(params) {
+      return request("/api/bots/command", {
+        method: "POST",
+        body: JSON.stringify(params),
+      });
+    },
+
     // ---------- Public API ----------
     getAuditLog,
     getDomainSettings,
@@ -514,12 +585,26 @@
     const badge = document.getElementById("paypal-status-badge");
     if (!badge) return;
     if (paypalConnected) {
-      badge.innerHTML = `<span class="status-dot" style="background:#003087; box-shadow:0 0 0 3px #00308740; animation: pulse 2s infinite"></span>PayPal ✓ Connected`;
+      badge.innerHTML = `<span class="status-dot" style="background:#003087; box-shadow:0 0 0 3px #00308740; animation: pulse 2s infinite"></span>PayPal âœ“ Connected`;
       badge.style.color = "#003087";
     } else {
       badge.innerHTML = `<span class="status-dot" style="background:#f59e0b; box-shadow:0 0 0 3px rgba(245,158,11,.2)"></span>PayPal Simulated`;
       badge.style.color = "";
     }
+  }
+
+  async function calculateDisputeOutlook(data) {
+    return request("/api/ai/dispute-outlook", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async function cfoChat(prompt) {
+    return request("/api/ai/cfo-chat", {
+      method: "POST",
+      body: JSON.stringify({ prompt }),
+    });
   }
 
   // Start real-time connection and check health
@@ -534,3 +619,4 @@
     updateServerBadge("LOCAL ACTIVE", "#10b981", false);
   });
 })();
+

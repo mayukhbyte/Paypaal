@@ -1,3 +1,4 @@
+// @src-type: library
 window.MANDATE_DATA = Object.freeze({
   storageKey: "mandate-agent-console-v2-clean",
   dashboard: {

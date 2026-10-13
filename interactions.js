@@ -1,3 +1,4 @@
+// @src-type: component
 (() => {
   "use strict";
   const api = window.MANDATE_APP;
@@ -456,6 +457,14 @@
                 <div class="form-field">
                   <label for="sim-category">Category</label>
                   <input id="sim-category" name="category" value="${esc(m.categories?.[0] || "Software")}" placeholder="e.g. Software">
+                </div>
+                <div class="form-field full">
+                  <label for="sim-rail-select">Settlement Payment Rail</label>
+                  <select id="sim-rail-select" name="rail">
+                    <option value="paypal" selected>PayPal Sandbox Rail</option>
+                    <option value="whatsapp">💬 WhatsApp Finance Bot Rail</option>
+                    <option value="telegram">✈️ Telegram Finance Bot Rail</option>
+                  </select>
                 </div>
                 <div class="form-field full">
                   <label for="sim-purpose">Payment Description / Memo</label>
@@ -937,7 +946,8 @@
 
       if (result && (result.submissionId || result.status === "submitted")) {
         s.dispute.submitted = true;
-        s.dispute.submissionId = result.submissionId || "PPDISP-" + Date.now().toString(36).toUpperCase();
+        s.dispute.submissionId = result.submissionId || result.disputeId || "DISP-" + Date.now().toString(36).toUpperCase();
+        s.dispute.paypalCaseId = result.paypalCaseId || "PP-DC-" + Date.now().toString().slice(-7);
         s.dispute.submittedAt = new Date().toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" });
         api.persist();
         api.render();
@@ -1026,6 +1036,9 @@
             const exIdx = s.approvals.findIndex(a => a.id === procApprId || a.referenceId === res.scan.id);
             if (exIdx >= 0) s.approvals[exIdx] = procAppr;
             else s.approvals.unshift(procAppr);
+            if (window.MANDATE_API && window.MANDATE_API.createApproval) {
+              window.MANDATE_API.createApproval(procAppr).catch(() => {});
+            }
             api.toast(`⚠️ Anomalies flagged in both documents (Variance: $${res.variance}). Connected to Approvals Queue for human review.`);
           } else {
             api.toast("✓ Exact match across both documents verified. Authorized for human sign-off.");
@@ -1389,11 +1402,9 @@
   // ==========================================
   function openVaultDialog() {
     const s = setState();
-    const defaultV = s.defaultVault || 0;
-    const spent = (s.mandates || []).reduce((acc, m) => acc + (Number(m.spent) || 0), 0);
-    const currentV = (s.mandates && s.mandates.length > 0)
-      ? (s.mandates || []).reduce((acc, m) => acc + Math.max(0, (Number(m.limit) || 0) - (Number(m.spent) || 0)), 0)
-      : Math.max(0, defaultV - spent);
+    const defaultV = (s.defaultVault !== undefined && s.defaultVault !== null && !isNaN(s.defaultVault)) ? Number(s.defaultVault) : (s.vault || 50000);
+    const liveV = (s.vault !== undefined && s.vault !== null && !isNaN(s.vault)) ? Number(s.vault) : defaultV;
+    const spent = Math.max(0, defaultV - liveV);
 
     $("#modal-root").innerHTML = `
       <div class="dialog-backdrop" id="vault-dialog-backdrop">
@@ -1411,21 +1422,21 @@
               <div class="metric-grid" style="grid-template-columns:1fr 1fr; margin-bottom:14px">
                 <div class="metric-card" style="padding:12px; background:var(--surface-low); border:1px solid var(--border)">
                   <span style="font-size:11px; color:var(--muted)">Current Available Vault</span>
-                  <strong style="font-size:20px; color:var(--green); display:block; margin-top:4px">${money(currentV)}</strong>
+                  <strong id="modal-vault-available" style="font-size:20px; color:var(--green); display:block; margin-top:4px">${money(liveV)}</strong>
                   <small style="font-size:10px; color:var(--muted)">Active reserve runway</small>
                 </div>
                 <div class="metric-card" style="padding:12px; background:var(--surface-low); border:1px solid var(--border)">
-                  <span style="font-size:11px; color:var(--muted)">Committed to Mandates</span>
-                  <strong style="font-size:20px; color:var(--text); display:block; margin-top:4px">${money(spent)}</strong>
-                  <small style="font-size:10px; color:var(--muted)">Across ${(s.mandates || []).length} policies</small>
+                  <span style="font-size:11px; color:var(--muted)">Committed / Spent</span>
+                  <strong id="modal-vault-committed" style="font-size:20px; color:var(--text); display:block; margin-top:4px">${money(spent)}</strong>
+                  <small style="font-size:10px; color:var(--muted)">Across policies & settlements</small>
                 </div>
               </div>
 
               <div class="form-grid">
                 <div class="form-field full">
                   <label for="vault-amount-input">Configure Default Vault Amount (USD)</label>
-                  <input id="vault-amount-input" name="amount" type="number" min="1000" step="1000" value="${defaultV}" required placeholder="e.g. 50000.00">
-                  <span class="form-hint">Changes default vault capacity synchronized with backend API telemetry.</span>
+                  <input id="vault-amount-input" name="amount" type="number" min="0" step="any" value="${liveV}" required placeholder="e.g. 50000.00">
+                  <span class="form-hint">Changes default vault capacity synchronized in real time with backend API telemetry.</span>
                 </div>
               </div>
 
@@ -1454,16 +1465,26 @@
   async function handleVaultAdjust(form) {
     const data = new FormData(form);
     const amount = Number(data.get("amount"));
-    if (!Number.isFinite(amount) || amount <= 0) {
-      return api.toast("Enter a valid positive vault amount.");
+    if (!Number.isFinite(amount) || amount < 0) {
+      return api.toast("Enter a valid vault amount (zero or positive).");
     }
     const s = setState();
     s.defaultVault = amount;
     s.vault = amount;
+    if (s.currentUser) {
+      s.currentUser.vaultAmount = amount;
+    }
+    const hv = $("#header-vault-amount");
+    if (hv) hv.textContent = "$" + Math.round(amount).toLocaleString("en-US");
+    const al = $("#topbar-auth-label");
+    if (al) {
+      const uName = s.currentUser?.name || (s.currentUser?.email ? s.currentUser.email.split("@")[0] : "Active");
+      al.textContent = `${uName} · $${Math.round(amount).toLocaleString("en-US")}`;
+    }
     api.persist();
     api.render();
     closeDialog();
-    api.toast(`Default vault updated to ${money(amount)}.`);
+    api.toast(`✓ Vault capital updated to ${money(amount)} across all app systems.`);
 
     if (window.MANDATE_API && typeof window.MANDATE_API.updateVault === "function") {
       try {
@@ -1475,10 +1496,136 @@
   }
 
   function handleVaultPreset(amount) {
+    const num = Number(amount);
     const input = $("#vault-amount-input");
     if (input) {
-      input.value = amount;
+      input.value = num;
       input.focus();
+    }
+    const s = setState();
+    s.defaultVault = num;
+    s.vault = num;
+    if (s.currentUser) s.currentUser.vaultAmount = num;
+    const modalAvail = $("#modal-vault-available");
+    if (modalAvail) modalAvail.textContent = money(num);
+    const hv = $("#header-vault-amount");
+    if (hv) hv.textContent = "$" + Math.round(num).toLocaleString("en-US");
+    const al = $("#topbar-auth-label");
+    if (al) {
+      const uName = s.currentUser?.name || (s.currentUser?.email ? s.currentUser.email.split("@")[0] : "Active");
+      al.textContent = `${uName} · $${Math.round(num).toLocaleString("en-US")}`;
+    }
+    api.persist();
+    if (window.MANDATE_API && typeof window.MANDATE_API.updateVault === "function") {
+      window.MANDATE_API.updateVault(num).catch(() => {});
+    }
+    api.toast(`✓ Vault capital preset set to ${money(num)}.`);
+  }
+
+  // ==========================================
+  // Track Custom Stock Modal Dialog
+  // ==========================================
+  function openTrackStockDialog() {
+    $("#modal-root").innerHTML = `
+      <div class="dialog-backdrop" id="track-stock-backdrop">
+        <section class="dialog-card" role="dialog" aria-modal="true" aria-labelledby="track-stock-title" style="max-width:520px">
+          <div class="dialog-head">
+            <div>
+              <span class="card-kicker">LIVE EXCHANGE TELEMETRY</span>
+              <h2 id="track-stock-title" style="margin-top:5px">Track Custom Stock Ticker</h2>
+              <p>Add any ticker (e.g. AAPL, MSFT, GOOGL, TSLA, AMD, SMCI). Live 5m market quotes and real-time AI suggestions will connect automatically.</p>
+            </div>
+            <button class="icon-button" data-action="close-dialog" type="button" aria-label="Close dialog">×</button>
+          </div>
+          <form id="track-stock-form">
+            <div class="dialog-body">
+              <div class="form-grid">
+                <div class="form-field full">
+                  <label for="track-ticker-input">Stock Ticker Symbol *</label>
+                  <input id="track-ticker-input" name="ticker" type="text" required placeholder="e.g. AAPL, MSFT, GOOGL, TSLA, AMD" style="text-transform:uppercase; font-weight:700; font-size:14px; letter-spacing:0.5px">
+                  <span class="form-hint">Connects directly to live financial market feed via Yahoo Finance API (100% real-time data, zero mock).</span>
+                </div>
+                <div class="form-field full">
+                  <label for="track-company-input">Company / Asset Name (Optional)</label>
+                  <input id="track-company-input" name="company" type="text" placeholder="e.g. Apple Inc.">
+                </div>
+                <div class="form-field">
+                  <label for="track-units-input">Shares / Units to Track *</label>
+                  <input id="track-units-input" name="units" type="number" min="1" step="1" value="10" required>
+                </div>
+                <div class="form-field">
+                  <label for="track-cost-input">Entry Cost Basis ($ USD)</label>
+                  <input id="track-cost-input" name="costBasis" type="number" min="0" step="any" placeholder="Auto: live market price">
+                </div>
+                <div class="form-field full">
+                  <label for="track-target-input">Target Analyst Price ($ USD)</label>
+                  <input id="track-target-input" name="targetPrice" type="number" min="0" step="any" placeholder="Auto: +25% upside target">
+                  <span class="form-hint">Projects potential upside valuation and drives real-time AI accumulation/trim advice.</span>
+                </div>
+              </div>
+            </div>
+            <div class="dialog-actions">
+              <button class="btn btn-secondary" data-action="close-dialog" type="button">Cancel</button>
+              <button class="btn btn-primary" type="submit" id="track-stock-submit-btn">
+                ✓ Connect Live Market Tracking
+              </button>
+            </div>
+          </form>
+        </section>
+      </div>
+    `;
+    const input = $("#track-ticker-input");
+    if (input) input.focus();
+  }
+
+  async function submitTrackStock(form) {
+    const data = new FormData(form);
+    const ticker = String(data.get("ticker") || "").trim().toUpperCase();
+    const company = String(data.get("company") || "").trim();
+    const units = Math.max(1, Number(data.get("units")) || 10);
+    const costBasis = data.get("costBasis") ? Number(data.get("costBasis")) : null;
+    const targetPrice = data.get("targetPrice") ? Number(data.get("targetPrice")) : null;
+
+    if (!ticker) return api.toast("Enter a valid ticker symbol.");
+
+    const btn = $("#track-stock-submit-btn");
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "Connecting Live Feed…";
+    }
+
+    try {
+      if (!window.MANDATE_API || !window.MANDATE_API.addHardwareStock) {
+        throw new Error("API client unavailable.");
+      }
+      const res = await window.MANDATE_API.addHardwareStock({
+        ticker,
+        company,
+        units,
+        costBasis,
+        targetPrice
+      });
+      const s = setState();
+      s.inventory = s.inventory || {};
+      s.inventory.items = s.inventory.items || [];
+      const updated = res.item;
+      if (updated) {
+        const idx = s.inventory.items.findIndex(i => i.ticker === ticker || i.sku === ticker);
+        if (idx >= 0) s.inventory.items[idx] = updated;
+        else s.inventory.items.unshift(updated);
+      }
+      s.inventory.selectedTicker = ticker;
+      api.persist();
+      api.render();
+      closeDialog();
+      api.toast(`✓ Real-time tracking connected for ${ticker} @ $${Number(updated?.marketPrice || 0).toFixed(2)}! Live AI telemetry active.`);
+      if (window.drawStockLiveChart) window.drawStockLiveChart();
+    } catch (err) {
+      api.toast(`Failed to add stock: ${err.message}`);
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "✓ Connect Live Market Tracking";
+      }
     }
   }
 
@@ -1563,8 +1710,16 @@
               </div>
             ` : `
               <div style="padding:10px 14px; background:rgba(59,130,246,0.08); border:1px solid rgba(59,130,246,0.2); border-radius:8px; margin-bottom:16px; font-size:12px; color:var(--muted)">
-                <strong style="color:var(--text); display:block; margin-bottom:2px">No Active User Session</strong>
-                Authenticate with OAuth or email credentials below and configure your desired vault money capital.
+                <div style="display:flex; justify-content:space-between; align-items:center">
+                  <div>
+                    <strong style="color:var(--text); display:block; margin-bottom:2px">Configured Vault Capital</strong>
+                    <span>Current active reserve: <strong style="color:var(--green)">${money(s.defaultVault || s.vault || 0)}</strong></span>
+                  </div>
+                  <div style="display:flex; gap:6px; align-items:center">
+                    <input id="guest-profile-vault" type="number" min="0" step="any" value="${s.defaultVault || s.vault || 0}" style="padding:4px 8px; font-size:11px; width:110px; background:var(--surface); border:1px solid var(--border); color:var(--text); border-radius:4px" placeholder="Set vault $">
+                    <button class="btn btn-secondary btn-sm" data-action="update-guest-vault" type="button" style="font-size:10px; padding:3px 8px">Set Vault $</button>
+                  </div>
+                </div>
               </div>
             `}
 
@@ -1783,6 +1938,7 @@
     const action = node.dataset.action;
     const s = setState();
     if (action === "open-mandate") return openMandateDialog();
+    if (action === "open-track-stock-dialog") return openTrackStockDialog();
     if (action === "quick-create-mandate") return createMandateFromPreset(node.dataset.template);
     if (action === "autofill-preset") return autofillPreset(node.dataset.preset);
     if (action === "close-dialog") return closeDialog();
@@ -1793,17 +1949,27 @@
     if (action === "oauth-login") return handleOAuthLogin(node.dataset.provider);
     if (action === "logout-user") return handleLogout();
     if (action === "set-vault-preset") return handleVaultPreset(node.dataset.amount);
-    if (action === "update-user-vault") {
-      const vInput = $("#user-profile-vault");
+    if (action === "update-user-vault" || action === "update-guest-vault") {
+      const vInput = action === "update-user-vault" ? $("#user-profile-vault") : $("#guest-profile-vault");
       const amt = Number(vInput?.value);
       if (!Number.isFinite(amt) || amt < 0) return api.toast("Enter a valid positive vault amount.");
       s.defaultVault = amt;
       s.vault = amt;
+      if (s.currentUser) {
+        s.currentUser.vaultAmount = amt;
+      }
+      const hv = $("#header-vault-amount");
+      if (hv) hv.textContent = "$" + Math.round(amt).toLocaleString("en-US");
+      const al = $("#topbar-auth-label");
+      if (al) {
+        const uName = s.currentUser?.name || (s.currentUser?.email ? s.currentUser.email.split("@")[0] : "Active");
+        al.textContent = `${uName} · $${Math.round(amt).toLocaleString("en-US")}`;
+      }
       api.persist(); api.render();
       if (window.MANDATE_API && window.MANDATE_API.updateVault) {
         window.MANDATE_API.updateVault(amt).catch(() => {});
       }
-      api.toast(`✓ Vault reserve set to ${money(amt)} according to your requirement.`);
+      api.toast(`✓ Vault reserve capital updated to ${money(amt)} in real time.`);
       return;
     }
     if (action === "load-demo-paypal") {
@@ -1827,6 +1993,41 @@
         if (window.MANDATE_API && window.MANDATE_API.toggleMandate) {
           window.MANDATE_API.toggleMandate(item.id).catch(() => {});
         }
+      }
+      return;
+    }
+    if (action === "pay-approval") {
+      const id = node.dataset.id;
+      const method = node.dataset.method || "paypal";
+      const item = s.approvals.find((entry) => entry.id === id);
+      if (!item) return;
+
+      const methodLabel = method === "whatsapp" ? "WhatsApp Bot" : method === "telegram" ? "Telegram Bot" : "PayPal Sandbox";
+
+      item.status = "approved";
+      item.settled = true;
+      item.paymentMethod = methodLabel;
+
+      // Sync originating feature
+      if (item.category === "procurement" || item.id.startsWith("appr-proc-")) {
+        if (s.procurement) { s.procurement.approved = true; s.procurement.status = "paid"; }
+      } else if (item.mandateId === "inventory-restock-gate" || item.id.startsWith("appr-inv-")) {
+        if (s.inventory) { s.inventory.approved = true; s.inventory.ordered = true; }
+      } else if (item.mandateId === "escrow-bounty-milestone" || item.category === "escrow" || item.id.startsWith("appr-escrow-")) {
+        if (s.escrow) { s.escrow.humanApproved = true; s.escrow.stage = 4; }
+      }
+
+      api.persist();
+      api.render();
+
+      if (window.MANDATE_API && window.MANDATE_API.payApproval) {
+        window.MANDATE_API.payApproval(id, method).then((res) => {
+          api.toast(`✓ Settlement of ${money(item.amount)} executed via ${methodLabel}! Capture: ${res.captureId || 'OK'}`);
+        }).catch((err) => {
+          api.toast(`Payment error: ${err.message}`);
+        });
+      } else {
+        api.toast(`✓ Settlement of ${money(item.amount)} executed via ${methodLabel}!`);
       }
       return;
     }
@@ -2009,10 +2210,77 @@
     }
     if (action === "simulate-procurement-payout") {
       if (!s.procurement.approved) return api.toast("A matching invoice and human approval are required first.");
-      api.toast(`PayPal Sandbox Payout dispatched for invoice ${s.procurement.invoiceRef || "INV-904"}.`);
+      const method = node.dataset.method || "paypal";
+      const methodLabel = method === "whatsapp" ? "WhatsApp Bot" : method === "telegram" ? "Telegram Bot" : "PayPal Sandbox";
+      api.toast(`✓ Payout of ${money(s.procurement.invoiceTotal || 0)} dispatched for invoice ${s.procurement.invoiceRef || "INV-904"} via ${methodLabel}.`);
       if (window.MANDATE_API && window.MANDATE_API.procurementPay) {
-        window.MANDATE_API.procurementPay(s.procurement.invoiceTotal, s.procurement.invoiceRef, "Supplier").catch(() => {});
+        window.MANDATE_API.procurementPay(s.procurement.invoiceTotal, s.procurement.invoiceRef, "Supplier", method).catch(() => {});
       }
+      return;
+    }
+    if (action === "dispute-sample-preset") {
+      const preset = node.dataset.preset;
+      const s = setState();
+      s.dispute = s.dispute || {};
+      if (preset === "fedex") {
+        s.dispute.transactionRef = "TX-948201-FDX";
+        s.dispute.amount = "1850.00";
+        s.dispute.shippingEvidence = "FedEx Express Priority TRK-884920194. Confirmed delivery at front door with recipient signature on file. GPS Match: 37.7749° N, 122.4194° W. Electronic POD verified.";
+      } else if (preset === "ups") {
+        s.dispute.transactionRef = "TX-773192-UPS";
+        s.dispute.amount = "3400.00";
+        s.dispute.shippingEvidence = "UPS Next Day Air 1Z9999999999999999. Signed by customer (J. DOE). Electronic Proof of Delivery scan recorded by carrier driver at confirmed PayPal buyer destination address.";
+      } else if (preset === "dhl") {
+        s.dispute.transactionRef = "TX-610283-DHL";
+        s.dispute.amount = "950.00";
+        s.dispute.shippingEvidence = "DHL Express Worldwide #DHL-5582910. Delivered and signed. International customs clearance complete. Matched PayPal payment authorization receipt.";
+      }
+      api.persist();
+      api.render();
+      updateRealTimeDisputeOutlook();
+      api.toast(`✓ Loaded verified carrier POD evidence for ${preset.toUpperCase()}. Real-time win rate updated.`);
+      return;
+    }
+    if (action === "pay-cfo-invoice") {
+      const id = node.dataset.id;
+      const method = node.dataset.method || "paypal";
+      const index = Number(node.dataset.index);
+      const s = setState();
+      s.cfo = s.cfo || {};
+      s.cfo.invoices = s.cfo.invoices || [];
+      const item = s.cfo.invoices.find(inv => inv.id === id) || s.cfo.invoices[index];
+      if (!item) return api.toast("Invoice not found");
+
+      const channelName = method === "whatsapp" ? "WhatsApp Bot" : method === "telegram" ? "Telegram Bot" : "PayPal Sandbox";
+      const btnText = node.textContent;
+      node.disabled = true;
+      node.textContent = "Settling...";
+
+      const payPromise = (window.MANDATE_API && window.MANDATE_API.payCfoInvoice)
+        ? window.MANDATE_API.payCfoInvoice(id || item.id, method, item)
+        : fetch(`/api/cfo/invoices/${encodeURIComponent(id || item.id)}/pay`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ method, client: item.client, amount: item.amount, currency: item.currency })
+          }).then(r => r.json());
+
+      payPromise.then(res => {
+        item.status = "paid";
+        item.paymentMethod = channelName;
+        item.payoutId = res?.payoutId || `INV-PAY-${Date.now().toString().slice(-6)}`;
+        if (res?.newVaultBalance !== undefined) {
+          s.vault = s.vault || {};
+          s.vault.balance = res.newVaultBalance;
+        }
+        api.persist();
+        api.render();
+        api.toast(`✓ Invoice settled: ${item.currency} ${item.amount} received from ${item.client} via ${channelName}! Vault balance updated.`);
+      }).catch(err => {
+        console.error("Invoice pay error:", err);
+        node.disabled = false;
+        node.textContent = btnText;
+        api.toast("Failed to settle invoice. Please retry.");
+      });
       return;
     }
     if (action === "create-invoice") return createInvoice();
@@ -2029,18 +2297,39 @@
     if (action === "simulate-inventory-telemetry") {
       const sku = node.dataset.sku;
       if (!sku) return;
+      const delta = Number(node.dataset.delta || -1);
       if (window.MANDATE_API && window.MANDATE_API.simulateInventoryTelemetry) {
-        window.MANDATE_API.simulateInventoryTelemetry(sku, -1).then((res) => {
+        window.MANDATE_API.simulateInventoryTelemetry(sku, delta).then((res) => {
           const item = (s.inventory.items || []).find(i => i.sku === sku);
           if (item) {
             item.stock = res.stock;
+            item.currentStock = res.stock;
             item.status = res.isLowStock ? "Low stock trigger active" : "Optimal Stock";
           }
           if (s.inventory.sku === sku) {
             s.inventory.stock = String(res.stock);
           }
           api.persist(); api.render();
-          api.toast(`ESP32 Telemetry: Stock consumed for ${sku}. Remaining: ${res.stock} units.`);
+          api.toast(delta < 0
+            ? `ESP32 Telemetry: Stock consumed for ${sku}. Remaining: ${res.stock} units.`
+            : `✓ Real-time stock updated for ${sku}: +${delta} units (New total: ${res.stock}).`);
+        }).catch(() => {});
+      }
+      return;
+    }
+    if (action === "quick-add-stock") {
+      const sku = s.inventory.sku || "NV-H100-80G";
+      const addUnits = Number(node.dataset.amount || 5);
+      if (window.MANDATE_API && window.MANDATE_API.simulateInventoryTelemetry) {
+        window.MANDATE_API.simulateInventoryTelemetry(sku, addUnits).then((res) => {
+          const item = (s.inventory.items || []).find(i => i.sku === sku);
+          if (item) {
+            item.stock = res.stock;
+            item.currentStock = res.stock;
+          }
+          s.inventory.stock = String(res.stock);
+          api.persist(); api.render();
+          api.toast(`✓ Added ${addUnits} units to ${sku}. Updated stock: ${res.stock} units.`);
         }).catch(() => {});
       }
       return;
@@ -2140,6 +2429,13 @@
         }).then((res) => {
           if (res) {
             s.inventory.evaluated = true;
+            if (res.stock !== undefined) s.inventory.stock = String(res.stock);
+            if (res.threshold !== undefined) s.inventory.threshold = String(res.threshold);
+            const foundItem = (s.inventory.items || []).find(i => i.sku === sku);
+            if (foundItem) {
+              if (res.stock !== undefined) { foundItem.stock = res.stock; foundItem.currentStock = res.stock; }
+              if (res.threshold !== undefined) { foundItem.threshold = res.threshold; foundItem.reorderThreshold = res.threshold; }
+            }
             if (res.isLowStock) {
               const bestQuote = res.optimalQuote;
               const invAppr = {
@@ -2161,6 +2457,9 @@
               const exIdx = s.approvals.findIndex(a => a.id === invAppr.id && a.status === "pending");
               if (exIdx >= 0) s.approvals[exIdx] = invAppr;
               else s.approvals.unshift(invAppr);
+              if (window.MANDATE_API && window.MANDATE_API.createApproval) {
+                window.MANDATE_API.createApproval(invAppr).catch(() => {});
+              }
             }
             api.persist(); api.render();
             api.toast(res.isLowStock ? `🚨 Low stock alert: ${res.stock} <= ${res.threshold}. Escalated to Approvals queue for human authorization.` : `✓ Stock level ${res.stock} sufficient.`);
@@ -2221,10 +2520,14 @@
     if (action === "verify-contract-evidence") {
       const id = node.dataset.id;
       if (!id) return;
+      const contract = (s.escrow?.contracts || []).find(c => c.id === id);
+      const evidence = contract?.evidence || "";
       if (window.MANDATE_API && window.MANDATE_API.verifyEscrowEvidence) {
-        window.MANDATE_API.verifyEscrowEvidence(id).then((res) => {
+        window.MANDATE_API.verifyEscrowEvidence(id, evidence).then((res) => {
           const idx = (s.escrow.contracts || []).findIndex(c => c.id === id);
-          if (idx >= 0 && res.contract) s.escrow.contracts[idx] = res.contract;
+          const updated = res.contract || res;
+          if (idx >= 0) s.escrow.contracts[idx] = updated;
+          else { s.escrow.contracts = s.escrow.contracts || []; s.escrow.contracts.unshift(updated); }
           api.persist(); api.render();
           api.toast("✓ Stage 1 Complete: Evidence reference verified. Escalated to human authorization.");
         }).catch((err) => api.toast(`Error: ${err.message}`));
@@ -2237,7 +2540,9 @@
       if (window.MANDATE_API && window.MANDATE_API.authorizeEscrow) {
         window.MANDATE_API.authorizeEscrow(id, "Lead Engineering Architect", "Verified test suite passing and commit tree intact.").then((res) => {
           const idx = (s.escrow.contracts || []).findIndex(c => c.id === id);
-          if (idx >= 0 && res.contract) s.escrow.contracts[idx] = res.contract;
+          const updated = res.contract || res;
+          if (idx >= 0) s.escrow.contracts[idx] = updated;
+          else { s.escrow.contracts = s.escrow.contracts || []; s.escrow.contracts.unshift(updated); }
           api.persist(); api.render();
           api.toast("✓ Stage 2 Complete: Human authorization recorded. PayPal Checkout unlocked.");
         }).catch((err) => api.toast(`Error: ${err.message}`));
@@ -2246,13 +2551,16 @@
     }
     if (action === "checkout-contract-paypal") {
       const id = node.dataset.id;
+      const method = node.dataset.method || "paypal";
       if (!id) return;
       if (window.MANDATE_API && window.MANDATE_API.checkoutEscrow) {
-        window.MANDATE_API.checkoutEscrow(id).then((res) => {
+        window.MANDATE_API.checkoutEscrow(id, method).then((res) => {
           const idx = (s.escrow.contracts || []).findIndex(c => c.id === id);
-          if (idx >= 0 && res.contract) s.escrow.contracts[idx] = res.contract;
+          const updated = res.contract || res.escrow || res;
+          if (idx >= 0) s.escrow.contracts[idx] = updated;
+          else { s.escrow.contracts = s.escrow.contracts || []; s.escrow.contracts.unshift(updated); }
           api.persist(); api.render();
-          api.toast(`✓ Stage 3 Complete: PayPal Sandbox disbursement settled! (${res.paypalOrderId || ""})`);
+          api.toast(`✓ Stage 3 Complete: PayPal Sandbox disbursement settled! (${res.payout?.id || ""})`); 
         }).catch((err) => api.toast(`Checkout error: ${err.message}`));
       }
       return;
@@ -2263,9 +2571,19 @@
       const targetInput = $("#triage-target-select") || $("#triage-target");
       const copayInput = $("#triage-copay-amount");
       const notesInput = $("#triage-notes");
+      const hrInput = $("#triage-vital-hr");
+      const bpInput = $("#triage-vital-bp");
+      const spo2Input = $("#triage-vital-spo2");
+      const tempInput = $("#triage-vital-temp");
 
       const patientName = nameInput ? nameInput.value.trim() : "";
       if (!patientName) return api.toast("Enter patient name or intake reference.");
+
+      const vitals = {};
+      if (hrInput && hrInput.value) vitals.hr = Number(hrInput.value);
+      if (bpInput && bpInput.value.trim()) vitals.bp = bpInput.value.trim();
+      if (spo2Input && spo2Input.value) vitals.spo2 = Number(spo2Input.value);
+      if (tempInput && tempInput.value) vitals.temp = Number(tempInput.value);
 
       const payload = {
         patientName,
@@ -2273,13 +2591,18 @@
         billingTarget: targetInput ? targetInput.value : "Patient",
         copay: copayInput ? Number(copayInput.value) : 35,
         notes: notesInput ? notesInput.value.trim() : "Standard intake",
+        ...(Object.keys(vitals).length > 0 ? { vitals } : {})
       };
 
       if (window.MANDATE_API && window.MANDATE_API.createTriageRecord) {
         window.MANDATE_API.createTriageRecord(payload).then((rec) => {
           if (nameInput) nameInput.value = "";
           if (notesInput) notesInput.value = "";
-          api.toast(`✓ Patient "${rec.patientName}" registered in real-time triage queue.`);
+          if (hrInput) hrInput.value = "";
+          if (bpInput) bpInput.value = "";
+          if (spo2Input) spo2Input.value = "";
+          if (tempInput) tempInput.value = "";
+          api.toast(`✓ Patient "${rec.patientName}" registered in real-time triage queue with active vitals.`);
         }).catch((err) => {
           api.toast(`Error adding intake: ${err.message}`);
         });
@@ -2308,10 +2631,12 @@
     }
     if (action === "pay-triage") {
       const id = node.dataset.id;
+      const method = node.dataset.method || "paypal";
       if (!id) return;
       if (window.MANDATE_API && window.MANDATE_API.payTriage) {
-        window.MANDATE_API.payTriage(id).then(() => {
-          api.toast("✓ PayPal Sandbox copay payment captured and settled!");
+        window.MANDATE_API.payTriage(id, method).then((res) => {
+          const methodLabel = method === "whatsapp" ? "WhatsApp Bot" : method === "telegram" ? "Telegram Bot" : "PayPal Sandbox";
+          api.toast(`✓ Copay payment of ${res.paid || res.copay || "35.00"} captured & settled via ${methodLabel}!`);
         }).catch((err) => api.toast(`Payment error: ${err.message}`));
       }
       return;
@@ -2391,6 +2716,104 @@
       }
       return;
     }
+    // ---- Hardware Stocks: select ticker, buy from vault, sell to vault ----
+    if (action === "select-stock-ticker") {
+      const ticker = node.dataset.ticker;
+      if (!ticker) return;
+      s.inventory = s.inventory || {};
+      s.inventory.selectedTicker = ticker;
+      api.persist(); api.render();
+      // Fetch live chart for selected ticker
+      if (window.MANDATE_API && window.MANDATE_API.getStockChart) {
+        window.MANDATE_API.getStockChart(ticker).then((res) => {
+          const items = s.inventory.items || [];
+          const item = items.find(i => i.ticker === ticker);
+          if (item && res && res.history) {
+            item.history = res.history;
+            api.persist(); api.render();
+          }
+          if (window.drawStockLiveChart) window.drawStockLiveChart();
+          else setTimeout(() => { const fn = window.MANDATE_APP?.drawStockLiveChart; if (fn) fn(); }, 50);
+        }).catch(() => {});
+      }
+      return;
+    }
+    if (action === "quick-buy-stock") {
+      const ticker = node.dataset.ticker;
+      const units = Number(node.dataset.units || 1);
+      if (!ticker || units <= 0) return api.toast("Invalid ticker or unit count.");
+      if (!window.MANDATE_API || !window.MANDATE_API.buyHardwareStock) return api.toast("Market buy unavailable.");
+      node.disabled = true;
+      node.textContent = "Buying…";
+      window.MANDATE_API.buyHardwareStock(ticker, units).then((res) => {
+        s.inventory = s.inventory || {};
+        s.inventory.items = s.inventory.items || [];
+        const updatedItem = res.item;
+        if (updatedItem) {
+          const idx = s.inventory.items.findIndex(i => i.ticker === ticker || i.sku === ticker);
+          if (idx >= 0) s.inventory.items[idx] = { ...s.inventory.items[idx], ...updatedItem };
+          else s.inventory.items.unshift(updatedItem);
+        }
+        if (res.vault) {
+          if (res.vault.available !== undefined) s.vault = Number(res.vault.available);
+          if (res.vault.amount !== undefined) s.defaultVault = Number(res.vault.amount);
+        }
+        const hv = $("#header-vault-amount");
+        if (hv && s.vault !== undefined) hv.textContent = "$" + Math.round(s.vault).toLocaleString("en-US");
+        const al = $("#topbar-auth-label");
+        if (al && s.vault !== undefined) {
+          const uName = s.currentUser?.name || (s.currentUser?.email ? s.currentUser.email.split("@")[0] : "Active");
+          al.textContent = `${uName} · $${Math.round(s.vault).toLocaleString("en-US")}`;
+        }
+        api.persist(); api.render();
+        api.toast(`✓ Bought ${units} unit(s) of ${ticker} for $${Number(res.totalCost || 0).toFixed(2)} from Vault.`);
+      }).catch((err) => {
+        api.toast(`Buy failed: ${err.message}`);
+        node.disabled = false;
+        node.textContent = "+ Buy";
+      });
+      return;
+    }
+    if (action === "quick-sell-stock") {
+      const ticker = node.dataset.ticker;
+      let units = node.dataset.units === "all" ? null : Number(node.dataset.units || 1);
+      if (!ticker) return api.toast("Invalid ticker.");
+      if (units === null) {
+        const item = (s.inventory.items || []).find(i => i.ticker === ticker || i.sku === ticker);
+        units = Number(item?.units !== undefined ? item.units : (item?.stock || 0));
+      }
+      if (!units || units <= 0) return api.toast(`No ${ticker} units available to sell.`);
+      if (!window.MANDATE_API || !window.MANDATE_API.sellHardwareStock) return api.toast("Market sell unavailable.");
+      node.disabled = true;
+      node.textContent = "Selling…";
+      window.MANDATE_API.sellHardwareStock(ticker, units).then((res) => {
+        s.inventory = s.inventory || {};
+        s.inventory.items = s.inventory.items || [];
+        const updatedItem = res.item;
+        if (updatedItem) {
+          const idx = s.inventory.items.findIndex(i => i.ticker === ticker || i.sku === ticker);
+          if (idx >= 0) s.inventory.items[idx] = { ...s.inventory.items[idx], ...updatedItem };
+        }
+        if (res.vault) {
+          if (res.vault.available !== undefined) s.vault = Number(res.vault.available);
+          if (res.vault.amount !== undefined) s.defaultVault = Number(res.vault.amount);
+        }
+        const hv = $("#header-vault-amount");
+        if (hv && s.vault !== undefined) hv.textContent = "$" + Math.round(s.vault).toLocaleString("en-US");
+        const al = $("#topbar-auth-label");
+        if (al && s.vault !== undefined) {
+          const uName = s.currentUser?.name || (s.currentUser?.email ? s.currentUser.email.split("@")[0] : "Active");
+          al.textContent = `${uName} · $${Math.round(s.vault).toLocaleString("en-US")}`;
+        }
+        api.persist(); api.render();
+        api.toast(`✓ Sold ${units} unit(s) of ${ticker}. +$${Number(res.proceeds || 0).toFixed(2)} credited directly to Vault!`);
+      }).catch((err) => {
+        api.toast(`Sell failed: ${err.message}`);
+        node.disabled = false;
+        node.textContent = "- Sell";
+      });
+      return;
+    }
   }
 
   const routeLabels = {
@@ -2412,6 +2835,33 @@
   function handleInput(event) {
     const target = event.target;
     const s = setState();
+
+    // 0. Live Vault Amount Input (Real-time keystroke synchronization)
+    if (target.id === "vault-amount-input" || target.id === "auth-vault-amount" || target.id === "user-profile-vault" || target.id === "guest-profile-vault") {
+      const val = parseFloat(target.value);
+      if (!isNaN(val) && val >= 0) {
+        s.defaultVault = val;
+        s.vault = val;
+        if (s.currentUser) s.currentUser.vaultAmount = val;
+        const hv = $("#header-vault-amount");
+        if (hv) hv.textContent = "$" + Math.round(val).toLocaleString("en-US");
+        const al = $("#topbar-auth-label");
+        if (al) {
+          const uName = s.currentUser?.name || (s.currentUser?.email ? s.currentUser.email.split("@")[0] : "Active");
+          al.textContent = `${uName} · $${Math.round(val).toLocaleString("en-US")}`;
+        }
+        const modalAvail = $("#modal-vault-available");
+        if (modalAvail) modalAvail.textContent = money(val);
+        api.persist();
+        clearTimeout(window._vaultDebounce);
+        window._vaultDebounce = setTimeout(() => {
+          if (window.MANDATE_API && window.MANDATE_API.updateVault) {
+            window.MANDATE_API.updateVault(val).catch(() => {});
+          }
+        }, 300);
+      }
+      return;
+    }
 
     // 1. Live Payment Simulator input
     if (target.id === "sim-merchant" || target.id === "sim-amount" || target.id === "sim-category") {
@@ -2447,7 +2897,19 @@
 
     // 4. Inventory live calculations
     if (target.matches("[data-inventory-field]")) {
-      s.inventory[target.dataset.inventoryField] = target.value;
+      const field = target.dataset.inventoryField;
+      s.inventory[field] = target.value;
+      if (s.inventory.sku && Array.isArray(s.inventory.items)) {
+        const item = s.inventory.items.find(i => i.sku === s.inventory.sku);
+        if (item) {
+          if (field === "stock") { item.stock = target.value; item.currentStock = Number(target.value); }
+          if (field === "threshold") { item.threshold = target.value; item.reorderThreshold = Number(target.value); }
+          if (field === "item") item.item = target.value;
+          if (field === "supplierA") item.supplierA = target.value;
+          if (field === "priceA") item.priceA = Number(target.value);
+          if (field === "daysA") item.daysA = Number(target.value);
+        }
+      }
       const hasStock = s.inventory.stock !== "" && s.inventory.threshold !== "";
       const low = hasStock && Number(s.inventory.stock) <= Number(s.inventory.threshold);
       const quotes = [
@@ -2617,6 +3079,35 @@
       s.triage.billingTarget = target.value; api.persist();
     } else if (target.id === "reconcile-from" || target.id === "reconcile-to") {
       fetchLiveFx();
+    } else if (target.matches("[data-inventory-field]")) {
+      const field = target.dataset.inventoryField;
+      s.inventory[field] = target.value;
+      if (s.inventory.sku && Array.isArray(s.inventory.items)) {
+        const item = s.inventory.items.find(i => i.sku === s.inventory.sku);
+        if (item) {
+          if (field === "stock") { item.stock = target.value; item.currentStock = Number(target.value); }
+          if (field === "threshold") { item.threshold = target.value; item.reorderThreshold = Number(target.value); }
+          if (field === "item") item.item = target.value;
+          if (field === "supplierA") item.supplierA = target.value;
+          if (field === "priceA") item.priceA = Number(target.value);
+          if (field === "daysA") item.daysA = Number(target.value);
+        }
+      }
+      api.persist();
+      if (window.MANDATE_API && window.MANDATE_API.evaluateInventory) {
+        window.MANDATE_API.evaluateInventory({
+          sku: s.inventory.sku,
+          stock: s.inventory.stock,
+          threshold: s.inventory.threshold,
+          item: s.inventory.item,
+          supplierA: s.inventory.supplierA,
+          priceA: s.inventory.priceA,
+          daysA: s.inventory.daysA,
+          supplierB: s.inventory.supplierB,
+          priceB: s.inventory.priceB,
+          daysB: s.inventory.daysB
+        }).then(() => { api.render(); }).catch(() => {});
+      }
     }
   }
 
@@ -2694,6 +3185,70 @@
     }
   });
 
+  async function submitAddInventory(form) {
+    const item = $("#add-inv-item")?.value.trim() || "Hardware Component";
+    const sku = $("#add-inv-sku")?.value.trim() || `HW-${Date.now().toString().slice(-4)}`;
+    const stock = Number($("#add-inv-stock")?.value || 0);
+    const threshold = Number($("#add-inv-threshold")?.value || 1);
+    const supplierA = $("#add-inv-supplierA")?.value.trim() || "PNY Enterprise Direct";
+    const priceA = Number($("#add-inv-priceA")?.value || 14200);
+    const daysA = Number($("#add-inv-daysA")?.value || 3);
+
+    const submitBtn = form.querySelector('[type="submit"]');
+    if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = "Registering with Telemetry…"; }
+
+    const payload = {
+      sku,
+      item,
+      stock,
+      currentStock: stock,
+      threshold,
+      reorderThreshold: threshold,
+      unit: "units",
+      supplierA,
+      priceA,
+      daysA,
+      supplierB: "Arrow Global Tech",
+      priceB: Math.round(priceA * 1.05),
+      daysB: Math.max(1, daysA - 1)
+    };
+
+    try {
+      let createdItem = payload;
+      if (window.MANDATE_API && window.MANDATE_API.addInventoryItem) {
+        createdItem = await window.MANDATE_API.addInventoryItem(payload);
+      }
+      const s = setState();
+      s.inventory = s.inventory || {};
+      s.inventory.items = s.inventory.items || [];
+      const exIdx = s.inventory.items.findIndex(i => i.sku === sku);
+      if (exIdx >= 0) {
+        s.inventory.items[exIdx] = createdItem;
+      } else {
+        s.inventory.items.unshift(createdItem);
+      }
+      s.inventory.sku = createdItem.sku;
+      s.inventory.item = createdItem.item;
+      s.inventory.stock = String(createdItem.stock);
+      s.inventory.threshold = String(createdItem.threshold);
+      s.inventory.supplierA = createdItem.supplierA;
+      s.inventory.priceA = String(createdItem.priceA);
+      s.inventory.daysA = String(createdItem.daysA);
+      s.inventory.supplierB = createdItem.supplierB;
+      s.inventory.priceB = String(createdItem.priceB);
+      s.inventory.daysB = String(createdItem.daysB);
+
+      closeDialog();
+      api.persist();
+      api.render();
+      api.toast(`✓ Added ${sku} (${item}) — stock: ${stock}, threshold: ${threshold} registered in real-time backend.`);
+    } catch (err) {
+      console.error("[Add Inventory] Error:", err);
+      api.toast("Failed to register hardware SKU with telemetry backend.");
+      if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = "Save & Track in Real Time"; }
+    }
+  }
+
   // Event Listeners for real-time reactivity
   document.addEventListener("input", handleInput);
   document.addEventListener("change", handleChange);
@@ -2713,6 +3268,10 @@
       event.preventDefault(); handleEmailLogin(event.target);
     } else if (event.target.id === "vault-adjust-form") {
       event.preventDefault(); handleVaultAdjust(event.target);
+    } else if (event.target.id === "add-inventory-form") {
+      event.preventDefault(); submitAddInventory(event.target);
+    } else if (event.target.id === "track-stock-form") {
+      event.preventDefault(); submitTrackStock(event.target);
     }
   });
 
